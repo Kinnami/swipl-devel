@@ -147,7 +147,7 @@ else()
 
   set(SWIPL_INSTALL_DIR ${SWIPL_INSTALL_DIR_DEF}
       CACHE STRING "Directory below <prefix> for installation")
-  set(SWIPL_TMP_DIR "/tmp" CACHE STRING
+  set(SWIPL_TMP_DIR "tmp" CACHE STRING
       "Directory to be used if the environment variable TMP is not set")
 
   if(BUILD_MACOS_BUNDLE)
