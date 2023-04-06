@@ -146,9 +146,14 @@ else()
   endif()
 
   set(SWIPL_INSTALL_DIR ${SWIPL_INSTALL_DIR_DEF}
-      CACHE STRING "Directory below <prefix> for installation")
+    CACHE STRING "Directory below <prefix> for installation")
+  if (${AMISHARE_TARGET_DISTRO} MATCHES "Android")
   set(SWIPL_TMP_DIR "tmp" CACHE STRING
-      "Directory to be used if the environment variable TMP is not set")
+    "Directory to be used if the environment variable TMP is not set")
+  else()
+  set(SWIPL_TMP_DIR "/tmp" CACHE STRING
+    "Directory to be used if the environment variable TMP is not set")
+  endif()
 
   if(BUILD_MACOS_BUNDLE)
     set(SWIPL_INSTALL_PREFIX    SWI-Prolog.app/Contents/swipl)
