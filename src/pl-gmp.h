@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2005-2023, University of Amsterdam
+    Copyright (c)  2005-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -45,10 +45,12 @@
 #define	PL_put_number(t, n)		LDFUNC(PL_put_number, t, n)
 #define	get_number(w, n)		LDFUNC(get_number, w, n)
 #define	PL_get_number(t, n)		LDFUNC(PL_get_number, t, n)
+#define	put_int64(p, i, flags)		LDFUNC(put_int64, p, i, flags)
 #define	put_uint64(at, l, flags)	LDFUNC(put_uint64, at, l, flags)
 #define	put_number(at, n, flags)	LDFUNC(put_number, at, n, flags)
+#define get_int64(w, ip)		LDFUNC(get_int64, w, ip)
 #ifdef O_BIGNUM
-#define	get_rational(w, n)		LDFUNC(get_rational, w, n)
+#define	get_rational_no_int(w, n)	LDFUNC(get_rational_no_int, w, n)
 #endif
 #endif /*USE_LD_MACROS*/
 
@@ -60,15 +62,17 @@ void	get_number(word w, Number n);
 int	PL_get_number(term_t t, Number n);
 int	PL_get_number(term_t t, Number n);
 int	put_uint64(Word at, uint64_t l, int flags);
+int	put_int64(Word p, int64_t i, int flags);
 int	put_number(Word at, Number n, int flags);
-int	promoteToFloatNumber(Number n);
-int	make_same_type_numbers(Number n1, Number n2) WUNUSED;
-int     promoteNumber(Number n1, numtype type) WUNUSED;
+bool	get_int64(word w, int64_t *ip);
+bool	promoteToFloatNumber(Number n);
+bool	make_same_type_numbers(Number n1, Number n2) WUNUSED;
+bool    promoteNumber(Number n1, numtype type) WUNUSED;
 int	cmpNumbers(Number n1, Number n2);
 int	cmpReals(Number n1, Number n2);
 void	cpNumber(Number to, Number from);
 #ifdef O_BIGNUM
-void	get_rational(word w, number *n);
+void	get_rational_no_int(word w, number *n);
 #endif
 
 #undef LDFUNC_DECLARATIONS
@@ -98,7 +102,7 @@ void	get_rational(word w, number *n);
 
 void	initGMP(void);
 void	cleanupGMP(void);
-void	get_integer(word w, number *n);
+void	get_bigint(word w, number *n);
 Code	get_mpz_from_code(Code pc, mpz_t mpz);
 Code	get_mpq_from_code(Code pc, mpq_t mpq);
 int	promoteToMPZNumber(number *n);
@@ -119,8 +123,16 @@ double	mpq_to_double(mpq_t q);
 void	mpq_set_double(mpq_t q, double f);
 word	bignum_index(const word *p);
 
-#define clearNumber(n) \
-	do { if ( (n)->type != V_INTEGER ) clearGMPNumber(n); } while(0)
+static inline void
+clearNumber(Number n)
+{ switch(n->type)
+  { case V_INTEGER:
+    case V_FLOAT:
+      return;
+    default:
+      clearGMPNumber(n);
+  }
+}
 
 static inline word
 mpz_size_stack(int sz)
@@ -152,12 +164,34 @@ mpz_add_si(mpz_t r, const mpz_t n1, long add)
 }
 #endif
 
+static inline void
+get_integer(word w, Number n)
+{ if ( storage(w) == STG_INLINE )
+  { n->type = V_INTEGER,
+    n->value.i = valInt(w);
+  } else
+  { get_bigint(w, n);
+  }
+}
+
+
+#define get_rational(w, n) LDFUNC(get_rational, w, n)
+static inline void
+get_rational(DECL_LD word w, Number n)
+{ if ( storage(w) == STG_INLINE )
+  { n->value.i = valInt(w);
+    n->type = V_INTEGER;
+  } else
+  { get_rational_no_int(w, n);
+  }
+}
+
 #else /*O_BIGNUM*/
 
 #define get_integer(w, n) \
 	do \
 	{ (n)->type = V_INTEGER; \
-	  (n)->value.i = valInteger(w); \
+	  (n)->value.i = valInt(w); \
 	} while(0)
 #define get_rational(w, n) \
 	get_integer(w, n)
@@ -175,49 +209,52 @@ mpz_add_si(mpz_t r, const mpz_t n1, long add)
 		 *******************************/
 
 #define FE_NOTSET (-1)
+#define GMP_STACK_ALLOC 1024	/* in size_t units */
 
 #if O_MY_GMP_ALLOC
 typedef struct mp_mem_header
 { struct mp_mem_header *prev;
   struct mp_mem_header *next;
-  struct ar_context *context;
 } mp_mem_header;
 
 typedef struct ar_context
-{ struct ar_context *parent;
-  size_t	     allocated;
+{ mp_mem_header	    *head;
+  mp_mem_header	    *tail;
   int		     femode;
+  size_t	     allocated;
+  size_t	    *alloc_buf;
 } ar_context;
 
-#define O_GMP_LEAK_CHECK 0
-#if O_GMP_LEAK_CHECK
-#define GMP_LEAK_CHECK(g) g
-#else
-#define GMP_LEAK_CHECK(g)
-#endif
+#define AR_CTX \
+	size_t     __PL_ar_buf[GMP_STACK_ALLOC]; \
+	ar_context __PL_ar_ctx = {.alloc_buf = __PL_ar_buf};
 
-#define AR_CTX	ar_context __PL_ar_ctx = {0};
 #define AR_BEGIN() \
 	do \
-	{ __PL_ar_ctx.parent    = LD->gmp.context; \
+	{ assert(LD->gmp.context == NULL); \
 	  __PL_ar_ctx.femode    = FE_NOTSET; \
 	  LD->gmp.context	= &__PL_ar_ctx; \
-	  GMP_LEAK_CHECK(__PL_ar_ctx.allocated = LD->gmp.allocated); \
 	} while(0)
 #define AR_END() \
 	do \
-	{ LD->gmp.context = __PL_ar_ctx.parent; \
-	  GMP_LEAK_CHECK(if ( __PL_ar_ctx.allocated != LD->gmp.allocated ) \
-			 { Sdprintf("GMP: lost %ld bytes\n", \
-				    LD->gmp.allocated-__PL_ar_ctx.allocated); \
-			 }) \
+	{ LD->gmp.context = NULL; \
 	} while(0)
 #define AR_CLEANUP() \
 	do \
-	{ if ( __PL_ar_ctx.femode != FE_NOTSET ) \
+	{ LD->gmp.context = NULL; \
+          if ( __PL_ar_ctx.femode != FE_NOTSET )	    \
 	    fesetround(__PL_ar_ctx.femode); \
 	  mp_cleanup(&__PL_ar_ctx); \
 	} while(0)
+
+#define AR_PERSISTENT(g)				\
+  do							\
+  { ar_context *__PL_ar_ctx_saved = LD->gmp.context;	\
+  LD->gmp.context = NULL;				\
+  g;							\
+  LD->gmp.context = __PL_ar_ctx_saved;			\
+  } while(0)
+
 
 void	mp_cleanup(ar_context *ctx);
 

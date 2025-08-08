@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2021, University of Amsterdam
+    Copyright (c)  1985-2025, University of Amsterdam
                               VU University Amsterdam
                               SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -56,8 +56,8 @@
                  *         VERSION BANNER       *
                  *******************************/
 
-:- dynamic
-    prolog:version_msg/1.
+:- dynamic prolog:version_msg/1.
+:- multifile prolog:version_msg/1.
 
 %!  version is det.
 %
@@ -88,20 +88,25 @@ version(Message) :-
                 *         INITIALISATION        *
                 *********************************/
 
-%!  load_init_file is det.
+%!  load_init_file(+ScriptMode) is det.
 %
 %   Load the user customization file. This can  be done using ``swipl -f
 %   file`` or simply using ``swipl``. In the   first  case we search the
 %   file both directly and over  the   alias  `user_app_config`.  In the
 %   latter case we only use the alias.
 
-load_init_file :-
+load_init_file(_) :-
     '$cmd_option_val'(init_file, OsFile),
     !,
     prolog_to_os_filename(File, OsFile),
     load_init_file(File, explicit).
-load_init_file :-
+load_init_file(prolog) :-
+    !,
     load_init_file('init.pl', implicit).
+load_init_file(none) :-
+    !,
+    load_init_file('init.pl', implicit).
+load_init_file(_).
 
 %!  loaded_init_file(?Base, ?AbsFile)
 %
@@ -123,6 +128,7 @@ load_init_file(Base, _) :-
                        [ access(read),
                          file_errors(fail)
                        ]),
+    !,
     asserta(loaded_init_file(Base, InitFile)),
     load_files(user:InitFile,
                [ scope_settings(false)
@@ -178,8 +184,8 @@ load_script_files([OsFile|More]) :-
                              file_errors(fail)
                            ])
     ->  asserta(loaded_init_file(script, Path)),
-        load_files(user:Path, []),
-        load_files(More)
+        load_files(user:Path),
+        load_files(user:More)
     ;   throw(error(existence_error(script_file, File), _))
     ).
 
@@ -225,6 +231,7 @@ prolog:message(initialize_now(Goal, Use)) -->
     ].
 
 '$run_initialization' :-
+    '$set_prolog_file_extension',
     '$run_initialization'(_, []),
     '$thread_init'.
 
@@ -265,7 +272,12 @@ thread_initialization(Goal) :-
     call(Goal),
     !.
 
+%!  '$thread_init'
+%
+%   Called by start_thread() from pl-thread.c before the thread's goal.
+
 '$thread_init' :-
+    set_prolog_flag(toplevel_thread, false),
     (   '$at_thread_initialization'(Goal),
         (   call(Goal)
         ->  fail
@@ -316,12 +328,8 @@ thread_initialization(Goal) :-
     { '$make_alias'(AliasChars, Alias) }.
 
 path_sep -->
-    { current_prolog_flag(windows, true)
-    },
-    !,
-    [;].
-path_sep -->
-    [:].
+    { current_prolog_flag(path_sep, Sep) },
+    [Sep].
 
 '$string'([]) --> [].
 '$string'([H|T]) --> [H], '$string'(T).
@@ -343,14 +351,46 @@ path_sep -->
                  *   LOADING ASSIOCIATED FILES  *
                  *******************************/
 
-%!  argv_files(-Files) is det.
+%!  argv_prolog_files(-Files, -ScriptMode) is det.
 %
-%   Update the Prolog flag `argv`, extracting the leading script files.
+%   Update the Prolog flag `argv`, extracting  the leading script files.
+%   This is called after the C based  parser removed Prolog options such
+%   as ``-q``, ``-f none``, etc.  These   options  are available through
+%   '$cmd_option_val'/2.
+%
+%   Our task is to update the Prolog flag   `argv`  and return a list of
+%   the files to be loaded.   The rules are:
+%
+%     - If we find ``--`` all remaining options must go to `argv`
+%     - If we find *.pl files, these are added to Files and possibly
+%       remaining arguments are "script" arguments.
+%     - If we find an existing file, this is Files and possibly
+%       remaining arguments are "script" arguments.
+%     - File we find [search:]name, find search(name) as Prolog file,
+%       make this the content of `Files` and pass the remainder as
+%       options to `argv`.
+%
+%   @arg ScriptMode is one of
+%
+%     - exe
+%       Program is a saved state
+%     - prolog
+%       One or more *.pl files on commandline
+%     - script
+%       Single existing file on commandline
+%     - app
+%       [path:]cli-name on commandline
+%     - none
+%       Normal interactive session
 
-argv_files(Files) :-
+argv_prolog_files([], exe) :-
+    current_prolog_flag(saved_program_class, runtime),
+    !,
+    clean_argv.
+argv_prolog_files(Files, ScriptMode) :-
     current_prolog_flag(argv, Argv),
-    no_option_files(Argv, Argv1, Files, ScriptArgs),
-    (   (   ScriptArgs == true
+    no_option_files(Argv, Argv1, Files, ScriptMode),
+    (   (   nonvar(ScriptMode)
         ;   Argv1 == []
         )
     ->  (   Argv1 \== Argv
@@ -361,30 +401,55 @@ argv_files(Files) :-
         halt(1)
     ).
 
-no_option_files([--|Argv], Argv, [], true) :- !.
-no_option_files([Opt|_], _, _, ScriptArgs) :-
-    ScriptArgs \== true,
+no_option_files([--|Argv], Argv, [], ScriptMode) :-
+    !,
+    (   ScriptMode = none
+    ->  true
+    ;   true
+    ).
+no_option_files([Opt|_], _, _, ScriptMode) :-
+    var(ScriptMode),
     sub_atom(Opt, 0, _, _, '-'),
     !,
     '$usage',
     halt(1).
-no_option_files([OsFile|Argv0], Argv, [File|T], ScriptArgs) :-
+no_option_files([OsFile|Argv0], Argv, [File|T], ScriptMode) :-
     file_name_extension(_, Ext, OsFile),
     user:prolog_file_type(Ext, prolog),
     !,
-    ScriptArgs = true,
+    ScriptMode = prolog,
     prolog_to_os_filename(File, OsFile),
-    no_option_files(Argv0, Argv, T, ScriptArgs).
-no_option_files([OsScript|Argv], Argv, [Script], ScriptArgs) :-
-    ScriptArgs \== true,
+    no_option_files(Argv0, Argv, T, ScriptMode).
+no_option_files([OsScript|Argv], Argv, [Script], ScriptMode) :-
+    var(ScriptMode),
     !,
-    prolog_to_os_filename(Script, OsScript),
-    (   exists_file(Script)
+    prolog_to_os_filename(PlScript, OsScript),
+    (   exists_file(PlScript)
+    ->  Script = PlScript,
+        ScriptMode = script
+    ;   cli_script(OsScript, Script)
+    ->  ScriptMode = app,
+        set_prolog_flag(app_name, OsScript)
+    ;   '$existence_error'(file, PlScript)
+    ).
+no_option_files(Argv, Argv, [], ScriptMode) :-
+    (   ScriptMode = none
     ->  true
-    ;   '$existence_error'(file, Script)
+    ;   true
+    ).
+
+cli_script(CLI, Script) :-
+    (   sub_atom(CLI, Pre, _, Post, ':')
+    ->  sub_atom(CLI, 0, Pre, _, SearchPath),
+        sub_atom(CLI, _, Post, 0, Base),
+        Spec =.. [SearchPath, Base]
+    ;   Spec = app(CLI)
     ),
-    ScriptArgs = true.
-no_option_files(Argv, Argv, [], _).
+    absolute_file_name(Spec, Script,
+                       [ file_type(prolog),
+                         access(exist),
+                         file_errors(fail)
+                       ]).
 
 clean_argv :-
     (   current_prolog_flag(argv, [--|Argv])
@@ -392,20 +457,14 @@ clean_argv :-
     ;   true
     ).
 
-%!  associated_files(-Files)
+%!  win_associated_files(+Files)
 %
 %   If SWI-Prolog is started as <exe> <file>.<ext>, where <ext> is
 %   the extension registered for associated files, set the Prolog
 %   flag associated_file, switch to the directory holding the file
 %   and -if possible- adjust the window title.
 
-associated_files([]) :-
-    current_prolog_flag(saved_program_class, runtime),
-    !,
-    clean_argv.
-associated_files(Files) :-
-    '$set_prolog_file_extension',
-    argv_files(Files),
+win_associated_files(Files) :-
     (   Files = [File|_]
     ->  absolute_file_name(File, AbsFile),
         set_prolog_flag(associated_file, AbsFile),
@@ -419,7 +478,7 @@ associated_files(Files) :-
 %   When opening as a GUI application, e.g.,  by opening a file from
 %   the Finder/Explorer/..., we typically  want   to  change working
 %   directory to the location of  the   primary  file.  We currently
-%   detect that we are a GUI app  by the Prolog flag =console_menu=,
+%   detect that we are a GUI app  by the Prolog flag `console_menu`,
 %   which is set by swipl-win[.exe].
 
 set_working_directory(File) :-
@@ -444,8 +503,7 @@ set_window_title(_).
 
 %!  start_pldoc
 %
-%   If the option  =|--pldoc[=port]|=  is   given,  load  the  PlDoc
-%   system.
+%   If the option ``--pldoc[=port]`` is given, load the PlDoc system.
 
 start_pldoc :-
     '$cmd_option_val'(pldoc_server, Server),
@@ -464,11 +522,7 @@ start_pldoc.
 %   Load Prolog files specified from the commandline.
 
 load_associated_files(Files) :-
-    (   '$member'(File, Files),
-        load_files(user:File, [expand(false)]),
-        fail
-    ;   true
-    ).
+    load_files(user:Files).
 
 hkey('HKEY_CURRENT_USER/Software/SWI/Prolog').
 hkey('HKEY_LOCAL_MACHINE/Software/SWI/Prolog').
@@ -503,63 +557,163 @@ hkey('HKEY_LOCAL_MACHINE/Software/SWI/Prolog').
 '$initialise' :-
     catch(initialise_prolog, E, initialise_error(E)).
 
-initialise_error('$aborted') :- !.
+initialise_error(unwind(abort)) :- !.
+initialise_error(unwind(halt(_))) :- !.
 initialise_error(E) :-
     print_message(error, initialization_exception(E)),
     fail.
 
 initialise_prolog :-
     '$clean_history',
-    apple_setup_app,
+    apply_defines,
+    init_optimise,
     '$run_initialization',
-    '$load_system_init_file',
-    set_toplevel,
-    '$set_file_search_paths',
+    '$load_system_init_file',                   % -F file
+    set_toplevel,                               % set `toplevel_goal` flag from -t
+    '$set_file_search_paths',                   % handle -p alias=dir[:dir]*
     init_debug_flags,
-    start_pldoc,
+    setup_app,
+    start_pldoc,                                % handle --pldoc[=port]
+    main_thread_init.
+
+%!  main_thread_init
+%
+%   Deal with the _Epilog_ toplevel. If  the   flag  `epilog` is set and
+%   xpce is around, create an epilog window   and complete the user part
+%   of the initialization in the epilog thread.
+
+main_thread_init :-
+    current_prolog_flag(epilog, true),
+    thread_self(main),
+    current_prolog_flag(xpce, true),
+    exists_source(library(epilog)),
+    !,
+    setup_theme,
+    catch(setup_backtrace, E, print_message(warning, E)),
+    use_module(library(epilog)),
+    call(epilog([ init(user_thread_init),
+                  main(true)
+                ])).
+main_thread_init :-
+    setup_theme,
+    user_thread_init.
+
+%!  user_thread_init
+%
+%   Complete the toplevel startup.  This may run in a separate thread.
+
+user_thread_init :-
     opt_attach_packs,
-    load_init_file,
+    argv_prolog_files(Files, ScriptMode),
+    load_init_file(ScriptMode),                 % -f file
     catch(setup_colors, E, print_message(warning, E)),
-    associated_files(Files),
-    '$load_script_file',
+    '$load_history',
+    win_associated_files(Files),                % swipl-win: cd and update title
+    '$load_script_file',                        % -s file (may be repeated)
     load_associated_files(Files),
-    '$cmd_option_val'(goals, Goals),
-    (   Goals == [],
-        \+ '$init_goal'(when(_), _, _)
+    '$cmd_option_val'(goals, Goals),            % -g goal (may be repeated)
+    (   ScriptMode == app
+    ->  run_program_init,                       % initialization(Goal, program)
+        run_main_init(true)
+    ;   Goals == [],
+        \+ '$init_goal'(when(_), _, _)          % no -g or -t or initialization(program)
     ->  version                                 % default interactive run
-    ;   run_init_goals(Goals),
-        (   load_only
+    ;   run_init_goals(Goals),                  % run -g goals
+        (   load_only                           % used -l to load
         ->  version
-        ;   run_program_init,
-            run_main_init
+        ;   run_program_init,                   % initialization(Goal, program)
+            run_main_init(false)                % initialization(Goal, main)
         )
     ).
 
-:- if(current_prolog_flag(apple,true)).
-apple_set_working_directory :-
-    (   expand_file_name('~', [Dir]),
-	exists_directory(Dir)
-    ->  working_directory(_, Dir)
-    ;   true
-    ).
+%!  setup_theme
 
-apple_set_locale :-
-    (   getenv('LC_CTYPE', 'UTF-8'),
-	apple_current_locale_identifier(LocaleID),
-	atom_concat(LocaleID, '.UTF-8', Locale),
-	catch(setlocale(ctype, _Old, Locale), _, fail)
-    ->  setenv('LANG', Locale),
-        unsetenv('LC_CTYPE')
-    ;   true
-    ).
+setup_theme :-
+    current_prolog_flag(theme, Theme),
+    exists_source(library(theme/Theme)),
+    !,
+    use_module(library(theme/Theme)).
+setup_theme.
 
-apple_setup_app :-
-    current_prolog_flag(apple, true),
-    current_prolog_flag(console_menu, true),	% SWI-Prolog.app on MacOS
-    apple_set_working_directory,
-    apple_set_locale.
-:- endif.
-apple_setup_app.
+%!  apply_defines
+%
+%   Handle -Dflag[=value] options
+
+apply_defines :-
+    '$cmd_option_val'(defines, Defs),
+    apply_defines(Defs).
+
+apply_defines([]).
+apply_defines([H|T]) :-
+    apply_define(H),
+    apply_defines(T).
+
+apply_define(Def) :-
+    sub_atom(Def, B, _, A, '='),
+    !,
+    sub_atom(Def, 0, B, _, Flag),
+    sub_atom(Def, _, A, 0, Value0),
+    (   '$current_prolog_flag'(Flag, Value0, _Scope, Access, Type)
+    ->  (   Access \== write
+        ->  '$permission_error'(set, prolog_flag, Flag)
+        ;   text_flag_value(Type, Value0, Value)
+        ),
+	set_prolog_flag(Flag, Value)
+    ;   (   atom_number(Value0, Value)
+	->  true
+	;   Value = Value0
+	),
+	set_defined(Flag, Value)
+    ).
+apply_define(Def) :-
+    atom_concat('no-', Flag, Def),
+    !,
+    set_user_boolean_flag(Flag, false).
+apply_define(Def) :-
+    set_user_boolean_flag(Def, true).
+
+set_user_boolean_flag(Flag, Value) :-
+    current_prolog_flag(Flag, Old),
+    !,
+    (   Old == Value
+    ->  true
+    ;   set_prolog_flag(Flag, Value)
+    ).
+set_user_boolean_flag(Flag, Value) :-
+    set_defined(Flag, Value).
+
+text_flag_value(integer, Text, Int) :-
+    atom_number(Text, Int),
+    !.
+text_flag_value(float, Text, Float) :-
+    atom_number(Text, Float),
+    !.
+text_flag_value(term, Text, Term) :-
+    term_string(Term, Text, []),
+    !.
+text_flag_value(_, Value, Value).
+
+set_defined(Flag, Value) :-
+    define_options(Flag, Options), !,
+    create_prolog_flag(Flag, Value, Options).
+
+%!  define_options(+Flag, -Options)
+%
+%   Define the options with which to create   Flag. This can be used for
+%   known flags to control -for example- their type.
+
+define_options('SDL_VIDEODRIVER', []).
+define_options(_, [warn_not_accessed(true)]).
+
+%!  init_optimise
+%
+%   Load library(apply_macros) if ``-O`` is effective.
+
+init_optimise :-
+    current_prolog_flag(optimise, true),
+    !,
+    use_module(user:library(apply_macros)).
+init_optimise.
 
 opt_attach_packs :-
     current_prolog_flag(packs, true),
@@ -605,7 +759,7 @@ run_program_init :-
     forall('$init_goal'(when(program), Goal, Ctx),
            run_init_goal(Goal, @(Goal,Ctx))).
 
-run_main_init :-
+run_main_init(_) :-
     findall(Goal-Ctx, '$init_goal'(when(main), Goal, Ctx), Pairs),
     '$last'(Pairs, Goal-Ctx),
     !,
@@ -614,7 +768,9 @@ run_main_init :-
     ;   true
     ),
     run_init_goal(Goal, @(Goal,Ctx)).
-run_main_init.
+run_main_init(true) :-
+    '$existence_error'(initialization, main).
+run_main_init(_).
 
 run_init_goal(Goal, Ctx) :-
     (   catch_with_backtrace(user:Goal, E, true)
@@ -637,9 +793,10 @@ run_init_goal(Goal, Ctx) :-
 %   toplevel.
 
 init_debug_flags :-
-    once(print_predicate(_, [print], PrintOptions)),
     Keep = [keep(true)],
-    create_prolog_flag(answer_write_options, PrintOptions, Keep),
+    create_prolog_flag(answer_write_options,
+                       [ quoted(true), portray(true), max_depth(10),
+                         spacing(next_argument)], Keep),
     create_prolog_flag(prompt_alternatives_on, determinism, Keep),
     create_prolog_flag(toplevel_extra_white_line, true, Keep),
     create_prolog_flag(toplevel_print_factorized, false, Keep),
@@ -733,6 +890,179 @@ load_setup_file(File) :-
                      ]), _, fail).
 
 
+%!  setup_app is det.
+%
+%   When running as an "app", behave as such. The behaviour depends on
+%   the platform.
+%
+%     - Windows
+%       If Prolog is started using --win_app, try to change directory
+%       to <My Documents>\Prolog.
+
+:- if(current_prolog_flag(windows,true)).
+
+setup_app :-
+    current_prolog_flag(associated_file, _),
+    !.
+setup_app :-
+    '$cmd_option_val'(win_app, true),
+    !,
+    catch(my_prolog, E, print_message(warning, E)).
+setup_app.
+
+my_prolog :-
+    win_folder(personal, MyDocs),
+    atom_concat(MyDocs, '/Prolog', PrologDir),
+    (   ensure_dir(PrologDir)
+    ->  working_directory(_, PrologDir)
+    ;   working_directory(_, MyDocs)
+    ).
+
+ensure_dir(Dir) :-
+    exists_directory(Dir),
+    !.
+ensure_dir(Dir) :-
+    catch(make_directory(Dir), E, (print_message(warning, E), fail)).
+
+:- elif(current_prolog_flag(apple, true)).
+use_app_settings(true).                        % Indicate we need app settings
+
+setup_app :-
+    apple_set_locale,
+    current_prolog_flag(associated_file, _),
+    !.
+setup_app :-
+    current_prolog_flag(bundle, true),
+    current_prolog_flag(executable, Exe),
+    file_base_name(Exe, 'SWI-Prolog'),
+    !,
+    setup_macos_app.
+setup_app.
+
+apple_set_locale :-
+    (   getenv('LC_CTYPE', 'UTF-8'),
+        apple_current_locale_identifier(LocaleID),
+        atom_concat(LocaleID, '.UTF-8', Locale),
+        catch(setlocale(ctype, _Old, Locale), _, fail)
+    ->  setenv('LANG', Locale),
+        unsetenv('LC_CTYPE')
+    ;   true
+    ).
+
+setup_macos_app :-
+    restore_working_directory,
+    !.
+setup_macos_app :-
+    expand_file_name('~/Documents/Prolog', [PrologDir]),
+    (   exists_directory(PrologDir)
+    ->  true
+    ;   catch(make_directory(PrologDir), MkDirError,
+              print_message(warning, MkDirError))
+    ),
+    catch(working_directory(_, PrologDir), CdError,
+          print_message(warning, CdError)),
+    !.
+setup_macos_app.
+
+:- elif(current_prolog_flag(emscripten, true)).
+setup_app.
+:- else.
+use_app_settings(true).                        % Indicate we need app settings
+
+% Other (Unix-like) platforms.
+setup_app :-
+    running_as_app,
+    restore_working_directory,
+    !.
+setup_app.
+
+%!  running_as_app is semidet.
+%
+%   True if we were started from the dock.
+
+running_as_app :-
+%   getenv('FLATPAK_SANDBOX_DIR', _),
+    current_prolog_flag(epilog, true),
+    stream_property(In, file_no(0)),
+    \+ stream_property(In, tty(true)),
+    !.
+
+:- endif.
+
+
+:- if((current_predicate(use_app_settings/1),
+       use_app_settings(true))).
+
+
+                /*******************************
+                *    APP WORKING DIRECTORY     *
+                *******************************/
+
+save_working_directory :-
+    working_directory(WD, WD),
+    app_settings(Settings),
+    (   Settings.get(working_directory) == WD
+    ->  true
+    ;   app_save_settings(Settings.put(working_directory, WD))
+    ).
+
+restore_working_directory :-
+    at_halt(save_working_directory),
+    app_settings(Settings),
+    WD = Settings.get(working_directory),
+    catch(working_directory(_, WD), _, fail),
+    !.
+
+                /*******************************
+                *           SETTINGS           *
+                *******************************/
+
+%!  app_settings(-Settings:dict) is det.
+%
+%   Get a dict holding the persistent application settings.
+
+app_settings(Settings) :-
+    app_settings_file(File),
+    access_file(File, read),
+    catch(setup_call_cleanup(
+              open(File, read, In, [encoding(utf8)]),
+              read_term(In, Settings, []),
+              close(In)),
+          Error,
+          (print_message(warning, Error), fail)),
+    !.
+app_settings(#{}).
+
+%!  app_save_settings(+Settings:dict) is det.
+%
+%   Save the given application settings dict.
+
+app_save_settings(Settings) :-
+    app_settings_file(File),
+    catch(setup_call_cleanup(
+              open(File, write, Out, [encoding(utf8)]),
+              write_term(Out, Settings,
+                         [ quoted(true),
+                           module(system), % default operators
+                           fullstop(true),
+                           nl(true)
+                         ]),
+              close(Out)),
+          Error,
+          (print_message(warning, Error), fail)).
+
+
+app_settings_file(File) :-
+    absolute_file_name(user_app_config('app_settings.pl'), File,
+                       [ access(write),
+                         file_errors(fail)
+                       ]).
+:- endif.% app_settings
+
+                /*******************************
+                *           TOPLEVEL           *
+                *******************************/
+
 :- '$hide'('$toplevel'/0).              % avoid in the GUI stacktrace
 
 %!  '$toplevel'
@@ -819,6 +1149,20 @@ setup_interactive :-
                 *    USER INTERACTIVE LOOP      *
                 *********************************/
 
+%!  prolog:repl_loop_hook(+BeginEnd, +BreakLevel) is nondet.
+%
+%   Multifile  hook  that  allows  acting    on   starting/stopping  the
+%   interactive REPL loop. Called as
+%
+%       forall(prolog:repl_loop_hook(BeginEnd, BreakLevel), true)
+%
+%   @arg BeginEnd is one of `begin` or `end`
+%   @arg BreakLevel is 0 for the normal toplevel, -1 when
+%   non-interactive and >0 for _break environments_.
+
+:- multifile
+    prolog:repl_loop_hook/2.
+
 %!  prolog
 %
 %   Run the Prolog toplevel. This is now  the same as break/0, which
@@ -838,21 +1182,41 @@ prolog :-
 %   exceptions are really unhandled (in Prolog).
 
 '$query_loop' :-
+    break_level(BreakLev),
+    setup_call_cleanup(
+        notrace(call_repl_loop_hook(begin, BreakLev, IsToplevel)),
+        '$query_loop'(BreakLev),
+        notrace(call_repl_loop_hook(end, BreakLev, IsToplevel))).
+
+call_repl_loop_hook(begin, BreakLev, IsToplevel) =>
+    (   current_prolog_flag(toplevel_thread, IsToplevel)
+    ->  true
+    ;   IsToplevel = false
+    ),
+    set_prolog_flag(toplevel_thread, true),
+    call_repl_loop_hook_(begin, BreakLev).
+call_repl_loop_hook(end, BreakLev, IsToplevel) =>
+    set_prolog_flag(toplevel_thread, IsToplevel),
+    call_repl_loop_hook_(end, BreakLev).
+
+call_repl_loop_hook_(BeginEnd, BreakLev) :-
+    forall(prolog:repl_loop_hook(BeginEnd, BreakLev), true).
+
+
+'$query_loop'(BreakLev) :-
     current_prolog_flag(toplevel_mode, recursive),
     !,
-    break_level(Level),
-    read_expanded_query(Level, Query, Bindings),
+    read_expanded_query(BreakLev, Query, Bindings),
     (   Query == end_of_file
     ->  print_message(query, query(eof))
     ;   '$call_no_catch'('$execute_query'(Query, Bindings, _)),
         (   current_prolog_flag(toplevel_mode, recursive)
-        ->  '$query_loop'
+        ->  '$query_loop'(BreakLev)
         ;   '$switch_toplevel_mode'(backtracking),
-            '$query_loop'           % Maybe throw('$switch_toplevel_mode')?
+            '$query_loop'(BreakLev)     % Maybe throw('$switch_toplevel_mode')?
         )
     ).
-'$query_loop' :-
-    break_level(BreakLev),
+'$query_loop'(BreakLev) :-
     repeat,
         read_expanded_query(BreakLev, Query, Bindings),
         (   Query == end_of_file
@@ -861,7 +1225,7 @@ prolog :-
             (   current_prolog_flag(toplevel_mode, recursive)
             ->  !,
                 '$switch_toplevel_mode'(recursive),
-                '$query_loop'
+                '$query_loop'(BreakLev)
             ;   fail
             )
         ).
@@ -883,12 +1247,16 @@ read_expanded_query(BreakLev, ExpandedQuery, ExpandedBindings) :-
     trim_stacks,
     trim_heap,
     repeat,
-      read_query(Prompt, Query, Bindings),
-      prompt(_, Old),
-      catch(call_expand_query(Query, ExpandedQuery,
-                              Bindings, ExpandedBindings),
-            Error,
-            (print_message(error, Error), fail)),
+      (   catch(read_query(Prompt, Query, Bindings),
+                error(io_error(_,_),_), fail)
+      ->  prompt(_, Old),
+          catch(call_expand_query(Query, ExpandedQuery,
+                                  Bindings, ExpandedBindings),
+                Error,
+                (print_message(error, Error), fail))
+      ;   set_prolog_flag(debug_on_error, false),
+          thread_exit(io_error)
+      ),
     !.
 
 
@@ -902,7 +1270,7 @@ read_expanded_query(BreakLev, ExpandedQuery, ExpandedBindings) :-
 read_query(_Prompt, Goal, Bindings) :-
     '$can_yield',
     !,
-    await(goal, GoalString),
+    await(query, GoalString),
     term_string(Goal, GoalString, [variable_names(Bindings)]).
 :- endif.
 read_query(Prompt, Goal, Bindings) :-
@@ -1150,7 +1518,7 @@ subst_chars([H|T]) -->
     ->  DetOrChp = true
     ;   DetOrChp = Chp
     ),
-    call_expand_answer(Bindings, NewBindings),
+    call_expand_answer(Goal, Bindings, NewBindings),
     (    \+ \+ write_bindings(NewBindings, Vars, Delays, DetOrChp)
     ->   !
     ).
@@ -1193,19 +1561,21 @@ write_bindings(Bindings, ResidueVars, Delays, DetOrChp) :-
     '$current_typein_module'(TypeIn),
     translate_bindings(Bindings, Bindings1, ResidueVars, TypeIn:Residuals),
     omit_qualifier(Delays, TypeIn, Delays1),
-    name_vars(Bindings1, Residuals, Delays1),
-    write_bindings2(Bindings1, Residuals, Delays1, DetOrChp).
+    write_bindings2(Bindings, Bindings1, Residuals, Delays1, DetOrChp).
 
-write_bindings2([], Residuals, Delays, _) :-
+write_bindings2(OrgBindings, [], Residuals, Delays, _) :-
     current_prolog_flag(prompt_alternatives_on, groundness),
     !,
+    name_vars(OrgBindings, [], t(Residuals, Delays)),
     print_message(query, query(yes(Delays, Residuals))).
-write_bindings2(Bindings, Residuals, Delays, true) :-
+write_bindings2(OrgBindings, Bindings, Residuals, Delays, true) :-
     current_prolog_flag(prompt_alternatives_on, determinism),
     !,
+    name_vars(OrgBindings, Bindings, t(Residuals, Delays)),
     print_message(query, query(yes(Bindings, Delays, Residuals))).
-write_bindings2(Bindings, Residuals, Delays, Chp) :-
+write_bindings2(OrgBindings, Bindings, Residuals, Delays, Chp) :-
     repeat,
+        name_vars(OrgBindings, Bindings, t(Residuals, Delays)),
         print_message(query, query(more(Bindings, Delays, Residuals))),
         get_respons(Action, Chp),
     (   Action == redo
@@ -1216,14 +1586,30 @@ write_bindings2(Bindings, Residuals, Delays, Chp) :-
         print_message(query, query(done))
     ).
 
-name_vars(Bindings, Residuals, Delays) :-
+%!  name_vars(+OrgBinding, +Bindings, +Term) is det.
+%
+%   Give a name ``_[A-Z][0-9]*`` to all variables   in Term, that do not
+%   have a name due to Bindings. Singleton   variables in Term are named
+%   `_`. The behavior depends on these Prolog flags:
+%
+%     - toplevel_name_variables
+%       Only act when `true`, else name_vars/3 is a no-op.
+%     - toplevel_print_anon
+%
+%   Variables are named by unifying them to `'$VAR'(Name)`
+%
+%   @arg Bindings is a list Name=Value
+
+name_vars(OrgBindings, Bindings, Term) :-
     current_prolog_flag(toplevel_name_variables, true),
+    answer_flags_imply_numbervars,
     !,
-    '$term_multitons'(t(Bindings,Residuals,Delays), Vars),
-    name_vars_(Vars, Bindings, 0),
-    term_variables(t(Bindings,Residuals,Delays), SVars),
+    '$term_multitons'(t(Bindings,Term), Vars),
+    bindings_var_names(OrgBindings, Bindings, VarNames),
+    name_vars_(Vars, VarNames, 0),
+    term_variables(t(Bindings,Term), SVars),
     anon_vars(SVars).
-name_vars(_Bindings, _Residuals, _Delays).
+name_vars(_OrgBindings, _Bindings, _Term).
 
 name_vars_([], _, _).
 name_vars_([H|T], Bindings, N) :-
@@ -1235,7 +1621,12 @@ anon_vars([]).
 anon_vars(['$VAR'('_')|T]) :-
     anon_vars(T).
 
-name_var(Bindings, Name, N0, N) :-
+%!  name_var(+Reserved, -Name, +N0, -N) is det.
+%
+%   True when Name is a valid name for   a new variable where the search
+%   is guided by the number N0. Name may not appear in Reserved.
+
+name_var(Reserved, Name, N0, N) :-
     between(N0, infinite, N1),
     I is N1//26,
     J is 0'A + N1 mod 26,
@@ -1243,22 +1634,55 @@ name_var(Bindings, Name, N0, N) :-
     ->  format(atom(Name), '_~c', [J])
     ;   format(atom(Name), '_~c~d', [J, I])
     ),
-    (   current_prolog_flag(toplevel_print_anon, false)
-    ->  true
-    ;   \+ is_bound(Bindings, Name)
-    ),
+    \+ memberchk(Name, Reserved),
     !,
     N is N1+1.
 
-is_bound([Vars=_|T], Name) :-
-    (   in_vars(Vars, Name)
-    ->  true
-    ;   is_bound(T, Name)
-    ).
+%!  bindings_var_names(+OrgBindings, +TransBindings, -VarNames) is det.
+%
+%   Find the joined set of variable names   in the original bindings and
+%   translated bindings. When generating new names,  we better also omit
+%   names  that  appear  in  the  original  bindings  (but  not  in  the
+%   translated bindigns).
 
-in_vars(Name, Name) :- !.
-in_vars(Names, Name) :-
-    '$member'(Name, Names).
+bindings_var_names(OrgBindings, TransBindings, VarNames) :-
+    phrase(bindings_var_names_(OrgBindings), VarNames0, Tail),
+    phrase(bindings_var_names_(TransBindings), Tail, []),
+    sort(VarNames0, VarNames).
+
+%!  bindings_var_names_(+Bindings)// is det.
+%
+%   Produce a list of variable names that appear in Bindings. This deals
+%   both with the single and joined representation of bindings.
+
+bindings_var_names_([]) --> [].
+bindings_var_names_([H|T]) -->
+    binding_var_names(H),
+    bindings_var_names_(T).
+
+binding_var_names(binding(Vars,_Value,_Subst)) ==>
+    var_names(Vars).
+binding_var_names(Name=_Value) ==>
+    [Name].
+
+var_names([]) --> [].
+var_names([H|T]) --> [H], var_names(T).
+
+
+%!  answer_flags_imply_numbervars
+%
+%   True when the answer will be  written recognising '$VAR'(N). If this
+%   is not the case we should not try to name the variables.
+
+answer_flags_imply_numbervars :-
+    current_prolog_flag(answer_write_options, Options),
+    numbervars_option(Opt),
+    memberchk(Opt, Options),
+    !.
+
+numbervars_option(portray(true)).
+numbervars_option(portrayed(true)).
+numbervars_option(numbervars(true)).
 
 %!  residual_goals(:NonTerminal)
 %
@@ -1326,7 +1750,12 @@ collect_residual_goals([H|T]) -->
     prolog:translate_bindings(+, -, +, +, :).
 
 prolog:translate_bindings(Bindings0, Bindings, ResVars, ResGoals, Residuals) :-
-    translate_bindings(Bindings0, Bindings, ResVars, ResGoals, Residuals).
+    translate_bindings(Bindings0, Bindings, ResVars, ResGoals, Residuals),
+    name_vars(Bindings0, Bindings, t(ResVars, ResGoals, Residuals)).
+
+% should not be required.
+prolog:name_vars(Bindings, Term) :- name_vars([], Bindings, Term).
+prolog:name_vars(Bindings0, Bindings, Term) :- name_vars(Bindings0, Bindings, Term).
 
 translate_bindings(Bindings0, Bindings, ResidueVars, Residuals) :-
     prolog:residual_goals(ResidueGoals, []),
@@ -1637,68 +2066,150 @@ self_bounded(binding([Name], Value, [])) :-
 %   Read the continuation entered by the user.
 
 :- if(current_prolog_flag(emscripten, true)).
-get_respons(Action, _Chp) :-
+get_respons(Action, Chp) :-
     '$can_yield',
     !,
-    await(more, ActionS),
-    atom_string(Action, ActionS).
+    repeat,
+        await(more, CommandS),
+        atom_string(Command, CommandS),
+        more_action(Command, Chp, Action),
+        (   Action == again
+        ->  print_message(query, query(action)),
+            fail
+        ;   !
+        ).
 :- endif.
 get_respons(Action, Chp) :-
     repeat,
         flush_output(user_output),
-        get_single_char(Char),
-        answer_respons(Char, Chp, Action),
+        get_single_char(Code),
+        find_more_command(Code, Command, Feedback, Style),
+        (   Style \== '-'
+        ->  print_message(query, if_tty([ansi(Style, '~w', [Feedback])]))
+        ;   true
+        ),
+        more_action(Command, Chp, Action),
         (   Action == again
         ->  print_message(query, query(action)),
             fail
         ;   !
         ).
 
-answer_respons(Char, _, again) :-
-    '$in_reply'(Char, '?h'),
-    !,
+find_more_command(-1, end_of_file, 'EOF', warning) :-
+    !.
+find_more_command(Code, Command, Feedback, Style) :-
+    more_command(Command, Atom, Feedback, Style),
+    '$in_reply'(Code, Atom),
+    !.
+find_more_command(Code, again, '', -) :-
+    print_message(query, no_action(Code)).
+
+more_command(help,        '?h',        '',          -).
+more_command(redo,        ';nrNR \t',  ';',         bold).
+more_command(trace,       'tT',        '; [trace]', comment).
+more_command(continue,    'ca\n\ryY.', '.',         bold).
+more_command(break,       'b',         '',          -).
+more_command(choicepoint, '*',         '',          -).
+more_command(write,       'w',         '[write]',   comment).
+more_command(print,       'p',         '[print]',   comment).
+more_command(depth_inc,   '+',         Change,      comment) :-
+    (   print_depth(Depth0)
+    ->  depth_step(Step),
+        NewDepth is Depth0*Step,
+        format(atom(Change), '[max_depth(~D)]', [NewDepth])
+    ;   Change = 'no max_depth'
+    ).
+more_command(depth_dec,   '-',         Change,      comment) :-
+    (   print_depth(Depth0)
+    ->  depth_step(Step),
+        NewDepth is max(1, Depth0//Step),
+        format(atom(Change), '[max_depth(~D)]', [NewDepth])
+    ;   Change = '[max_depth(10)]'
+    ).
+
+more_action(help, _, Action) =>
+    Action = again,
     print_message(help, query(help)).
-answer_respons(Char, _, redo) :-
-    '$in_reply'(Char, ';nrNR \t'),
-    !,
-    print_message(query, if_tty([ansi(bold, ';', [])])).
-answer_respons(Char, _, redo) :-
-    '$in_reply'(Char, 'tT'),
-    !,
+more_action(redo, _, Action) =>			% Next
+    Action = redo.
+more_action(trace, _, Action) =>
+    Action = redo,
     trace,
-    save_debug,
-    print_message(query, if_tty([ansi(bold, '; [trace]', [])])).
-answer_respons(Char, _, continue) :-
-    '$in_reply'(Char, 'ca\n\ryY.'),
-    !,
-    print_message(query, if_tty([ansi(bold, '.', [])])).
-answer_respons(0'b, _, show_again) :-
-    !,
+    save_debug.
+more_action(continue, _, Action) =>             % Stop
+    Action = continue.
+more_action(break, _, Action) =>
+    Action = show_again,
     break.
-answer_respons(0'*, Chp, show_again) :-
-    !,
+more_action(choicepoint, Chp, Action) =>
+    Action = show_again,
     print_last_chpoint(Chp).
-answer_respons(Char, _, show_again) :-
-    print_predicate(Char, Pred, Options),
-    !,
-    print_message(query, if_tty(['~w'-[Pred]])),
-    set_prolog_flag(answer_write_options, Options).
-answer_respons(-1, _, show_again) :-
-    !,
-    print_message(query, halt('EOF')),
+more_action(end_of_file, _, Action) =>
+    Action = show_again,
     halt(0).
-answer_respons(Char, _, again) :-
-    print_message(query, no_action(Char)).
+more_action(again, _, Action) =>
+    Action = again.
+more_action(Command, _, Action),
+    current_prolog_flag(answer_write_options, Options0),
+    print_predicate(Command, Options0, Options) =>
+    Action = show_again,
+    set_prolog_flag(answer_write_options, Options).
 
-print_predicate(0'w, [write], [ quoted(true),
-                                spacing(next_argument)
-                              ]).
-print_predicate(0'p, [print], [ quoted(true),
-                                portray(true),
-                                max_depth(10),
-                                spacing(next_argument)
-                              ]).
+print_depth(Depth) :-
+    current_prolog_flag(answer_write_options, Options),
+    memberchk(max_depth(Depth), Options),
+    !.
 
+%!  print_predicate(+Action, +Options0, -Options) is semidet.
+%
+%   Modify  the  `answer_write_options`  value  according  to  the  user
+%   command.
+
+print_predicate(write, Options0, Options) :-
+    edit_options([-portrayed(true),-portray(true)],
+                 Options0, Options).
+print_predicate(print, Options0, Options) :-
+    edit_options([+portrayed(true)],
+                 Options0, Options).
+print_predicate(depth_inc, Options0, Options) :-
+    (   '$select'(max_depth(D0), Options0, Options1)
+    ->  depth_step(Step),
+        D is D0*Step,
+        Options = [max_depth(D)|Options1]
+    ;   Options = Options0
+    ).
+print_predicate(depth_dec, Options0, Options) :-
+    (   '$select'(max_depth(D0), Options0, Options1)
+    ->  depth_step(Step),
+        D is max(1, D0//Step),
+        Options = [max_depth(D)|Options1]
+    ;   D = 10,
+        Options = [max_depth(D)|Options0]
+    ).
+
+depth_step(5).
+
+edit_options([], Options, Options).
+edit_options([H|T], Options0, Options) :-
+    edit_option(H, Options0, Options1),
+    edit_options(T, Options1, Options).
+
+edit_option(-Term, Options0, Options) =>
+    (   '$select'(Term, Options0, Options)
+    ->  true
+    ;   Options = Options0
+    ).
+edit_option(+Term, Options0, Options) =>
+    functor(Term, Name, 1),
+    functor(Var, Name, 1),
+    (   '$select'(Var, Options0, Options1)
+    ->  Options = [Term|Options1]
+    ;   Options = [Term|Options0]
+    ).
+
+%!  print_last_chpoint(+Chp) is det.
+%
+%   Print the last choicepoint when an answer is nondeterministic.
 
 print_last_chpoint(Chp) :-
     current_predicate(print_last_choice_point/0),
@@ -1720,21 +2231,30 @@ print_last_chpoint_(Chp) :-
 :- user:multifile(expand_query/4).
 
 call_expand_query(Goal, Expanded, Bindings, ExpandedBindings) :-
-    user:expand_query(Goal, Expanded, Bindings, ExpandedBindings),
-    !.
-call_expand_query(Goal, Expanded, Bindings, ExpandedBindings) :-
-    toplevel_variables:expand_query(Goal, Expanded, Bindings, ExpandedBindings),
-    !.
-call_expand_query(Goal, Goal, Bindings, Bindings).
+    (   '$replace_toplevel_vars'(Goal, Expanded0, Bindings, ExpandedBindings0)
+    ->  true
+    ;   Expanded0 = Goal, ExpandedBindings0 = Bindings
+    ),
+    (   user:expand_query(Expanded0, Expanded, ExpandedBindings0, ExpandedBindings)
+    ->  true
+    ;   Expanded = Expanded0, ExpandedBindings = ExpandedBindings0
+    ).
 
 
-:- user:dynamic(expand_answer/2).
-:- user:multifile(expand_answer/2).
+:- dynamic
+    user:expand_answer/2,
+    prolog:expand_answer/3.
+:- multifile
+    user:expand_answer/2,
+    prolog:expand_answer/3.
 
-call_expand_answer(Goal, Expanded) :-
-    user:expand_answer(Goal, Expanded),
+call_expand_answer(Goal, BindingsIn, BindingsOut) :-
+    (   prolog:expand_answer(Goal, BindingsIn, BindingsOut)
+    ->  true
+    ;   user:expand_answer(BindingsIn, BindingsOut)
+    ->  true
+    ;   BindingsOut = BindingsIn
+    ),
+    '$save_toplevel_vars'(BindingsOut),
     !.
-call_expand_answer(Goal, Expanded) :-
-    toplevel_variables:expand_answer(Goal, Expanded),
-    !.
-call_expand_answer(Goal, Goal).
+call_expand_answer(_, Bindings, Bindings).

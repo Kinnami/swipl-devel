@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2010-2023, VU University Amsterdam
+    Copyright (c)  2010-2025, VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -42,11 +42,7 @@
           ]).
 :- autoload(library(error), [domain_error/2, must_be/2, instantiation_error/1]).
 :- autoload(library(lists), [append/3]).
-:- autoload(library(uri), [uri_file_name/2]).
-:- if(exists_source(library(time))).
-:- autoload(library(time), [call_with_time_limit/2]).
-:- endif.
-
+:- autoload(library(utf8), [utf8_codes/3]).
 
 /** <module> Print decorated text to ANSI consoles
 
@@ -74,8 +70,8 @@ The behavior of this library is controlled by two Prolog flags:
 :- multifile
     prolog:console_color/2,                     % +Term, -AnsiAttrs
     supports_get_color/0,
-    hyperlink/2.                                % +Stream, +Spec
-
+    hyperlink/2,                                % +Stream, +Spec
+    tty_url_hook/2.                             % +For, -URL
 
 color_term_flag_default(true) :-
     stream_property(user_input, tty(true)),
@@ -345,7 +341,7 @@ hex_color(D1,V) :-
 %   Hook that allows  for  mapping  abstract   terms  to  concrete  ANSI
 %   attributes. This hook  is  used  by   _theme_  files  to  adjust the
 %   rendering based on  user  preferences   and  context.  Defaults  are
-%   defined in the file `boot/messages.pl`.
+%   defined in the file `boot/messages.pl`, default_theme/2.
 %
 %   @see library(theme/dark) for an example  implementation and the Term
 %   values used by the system messages.
@@ -440,54 +436,96 @@ location_label(File:Line, Label) =>
 location_label(File, Label) =>
     format(string(Label), '~w', [File]).
 
-ansi_hyperlink(Stream, Location, Label) :-
-    hyperlink(Stream, url(Location, Label)),
-    !.
-ansi_hyperlink(Stream, File:Line:Column, Label) :-
-    !,
-    (   url_file_name(URI, File)
-    ->  format(Stream, '\e]8;;~w#~d:~d\e\\~w\e]8;;\e\\',
-               [ URI, Line, Column, Label ])
+ansi_hyperlink(Stream, Location, Label),
+    hyperlink(Stream, url(Location, Label)) =>
+    true.
+ansi_hyperlink(Stream, Location, Label) =>
+    (   location_url(Location, URL)
+    ->  keep_line_pos(Stream,
+                      format(Stream, '\e]8;;~w\e\\', [URL])),
+        format(Stream, '~w', [Label]),
+        keep_line_pos(Stream,
+                      format(Stream, '\e]8;;\e\\', []))
     ;   format(Stream, '~w', [Label])
     ).
-ansi_hyperlink(Stream, File:Line, Label) :-
-    !,
-    (   url_file_name(URI, File)
-    ->  format(Stream, '\e]8;;~w#~w\e\\~w\e]8;;\e\\',
-               [ URI, Line, Label ])
-    ;   format(Stream, '~w:~w', [File, Line])
-    ).
-ansi_hyperlink(Stream, File, Label) :-
-    (   url_file_name(URI, File)
-    ->  format(Stream, '\e]8;;~w\e\\~w\e]8;;\e\\',
-               [ URI, Label ])
-    ;   format(Stream, '~w', [File])
-    ).
 
+is_url(URL) :-
+    (   atom(URL)
+    ->  true
+    ;   string(URL)
+    ),
+    url_prefix(Prefix),
+    sub_string(URL, 0, _, _, Prefix).
 
+url_prefix('http://').
+url_prefix('https://').
+url_prefix('file://').
 
-%!  hyperlink(+Stream, +Spec) is semidet.
+%!  location_url(+Location, -URL) is det.
 %
-%   Multifile hook that may be used   to redefine ansi_hyperlink/2,3. If
-%   this predicate succeeds the system assumes the link has been written
-%   to Stream.
-%
-%   @arg  Spec  is  either  url(Location)    or   url(URL,  Label).  See
-%   ansi_hyperlink/2,3 for details.
+%   Translate Location into a (file) URL.   This  predicate is hooked by
+%   tty_url_hook/2  with  the  same  signature  to  allow  for  actions,
+%   location specifiers or URL schemes.
 
-:- dynamic has_lib_uri/1 as volatile.
+location_url(Location, URL),
+    tty_url_hook(Location, URL0) =>
+    URL = URL0.
+location_url(File:Line:Column, URL) =>
+    url_file_name(FileURL, File),
+    format(string(URL), '~w#~d:~d', [FileURL, Line, Column]).
+location_url(File:Line, URL) =>
+    url_file_name(FileURL, File),
+    format(string(URL), '~w#~w', [FileURL, Line]).
+location_url(File, URL) =>
+    url_file_name(URL, File).
+
+%!  tty_url_hook(+Location, -URL)
+%
+%   Hook for location_url/2.
+
+
+%!  url_file_name(-URL, +File) is semidet.
+%
+%   Same as uri_file_name/2 in mode (-,+), but   as a core library we do
+%   not wish to depend on the `clib` package and its foreign support.
 
 url_file_name(URL, File) :-
+    is_url(File), !,
     current_prolog_flag(hyperlink_term, true),
-    (   has_lib_uri(true)
-    ->  uri_file_name(URL, File)
-    ;   exists_source(library(uri))
-    ->  use_module(library(uri), [uri_file_name/2]),
-        uri_file_name(URL, File),
-        asserta(has_lib_uri(true))
-    ;   asserta(has_lib_uri(false)),
-        fail
+    URL = File.
+url_file_name(URL, File) :-
+    current_prolog_flag(hyperlink_term, true),
+    absolute_file_name(File, AbsFile),
+    ensure_leading_slash(AbsFile, AbsFile1),
+    url_encode_path(AbsFile1, Encoded),
+    format(string(URL), 'file://~s', [Encoded]).
+
+ensure_leading_slash(Path, SlashPath) :-
+    (   sub_atom(Path, 0, _, _, /)
+    ->  SlashPath = Path
+    ;   atom_concat(/, Path, SlashPath)
     ).
+
+url_encode_path(Name, Encoded) :-
+    atom_codes(Name, Codes),
+    phrase(utf8_codes(Codes), UTF8),
+    phrase(encode(UTF8), Encoded).
+
+encode([]) --> [].
+encode([H|T]) --> encode1(H), encode(T).
+
+encode1(C) -->
+    { reserved(C),
+      !,
+      format(codes([C1,C2]), '~`0t~16r~2|', [C])
+    },
+    "%", [C1,C2].
+encode1(C) -->
+    [C].
+
+reserved(C) :- C =< 0'\s.
+reserved(C) :- C >= 127.
+reserved(0'#).
 
 %!  keep_line_pos(+Stream, :Goal)
 %
@@ -516,9 +554,8 @@ keep_line_pos(_, G) :-
 %   @arg RGB is a term rgb(Red,Green,Blue).  The color components are
 %   integers in the range 0..65535.
 
-
-:- if(current_predicate(call_with_time_limit/2)).
 ansi_get_color(Which0, RGB) :-
+    \+ current_prolog_flag(console_menu, true),
     stream_property(user_input, tty(true)),
     stream_property(user_output, tty(true)),
     stream_property(user_error, tty(true)),
@@ -530,7 +567,7 @@ ansi_get_color(Which0, RGB) :-
     ),
     catch(keep_line_pos(user_output,
                         ansi_get_color_(Which, RGB)),
-          time_limit_exceeded,
+          error(timeout_error(_,_), _),
           no_xterm).
 
 supports_get_color :-
@@ -547,8 +584,11 @@ ansi_get_color_(Which, rgb(R,G,B)) :-
     hex4(GH),
     hex4(BH),
     phrase(("\e]", Id, ";rgb:", RH, "/", GH, "/", BH, "\a"), Pattern),
-    call_with_time_limit(0.05,
-                         with_tty_raw(exchange_pattern(Which, Pattern))),
+    stream_property(user_input, timeout(Old)),
+    setup_call_cleanup(
+        set_stream(user_input, timeout(0.05)),
+        with_tty_raw(exchange_pattern(Which, Pattern)),
+        set_stream(user_input, timeout(Old))),
     !,
     hex_val(RH, R),
     hex_val(GH, G),
@@ -600,13 +640,6 @@ echo([]).
 echo([H|T]) :-
     put_code(user_output, H),
     echo(T).
-
-:- else.
-ansi_get_color(_Which0, _RGB) :-
-    fail.
-:- endif.
-
-
 
 :- multifile prolog:message//1.
 

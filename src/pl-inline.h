@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2008-2020, University of Amsterdam
+    Copyright (c)  2008-2024, University of Amsterdam
 			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -44,8 +45,8 @@
     #if SIZEOF_VOIDP == 8
       #pragma intrinsic(_BitScanReverse64)
     #endif
-    #pragma intrinsic(_BitScanReverse)
-  #endif
+      #pragma intrinsic(_BitScanReverse)
+    #endif
 #endif
 
 #include "pl-transaction.h"
@@ -71,7 +72,7 @@
 */
 
 #define HAVE_MSB 1
-static inline int
+static inline unsigned int
 MSB(size_t i)
 { unsigned long index;
 #if SIZEOF_VOIDP == 8
@@ -87,7 +88,7 @@ MSB(size_t i)
 
 #if SIZEOF_VOIDP == 8
 #define HAVE_MSB64 1
-static inline int
+static inline unsigned int
 MSB64(int64_t i)
 { unsigned long index;
   _BitScanReverse64(&index, i);
@@ -109,18 +110,39 @@ __builtin_popcount(size_t sz)
 #endif
 }
 
+static inline int
+__builtin_saddll_overflow(long long int a, long long int b, long long int *res)
+{ long long int r = a + b;
+  if ( (r > 0 && a < 0 && b < 0) ||
+       (r < 0 && a > 0 && b > 0) )
+    return true;
+
+  *res = r;
+  return false;
+}
+
 #endif /*_MSC_VER*/
 
 #if !defined(HAVE_MSB) && defined(HAVE__BUILTIN_CLZ)
-#if SIZEOF_VOIDP == SIZEOF_LONG
-#define MSB(i) ((int)sizeof(long)*8-1-__builtin_clzl(i)) /* GCC builtin */
 #define HAVE_MSB 1
-#elif SIZEOF_VOIDP == SIZEOF_LONG_LONG
-#define MSB(i) ((int)sizeof(long long)*8-1-__builtin_clzll(i)) /* GCC builtin */
-#define HAVE_MSB 1
-#endif
 #define HAVE_MSB64 1
-#define MSB64(i) ((int)sizeof(long long)*8-1-__builtin_clzll(i))
+
+static inline unsigned int
+MSB(size_t i)
+{
+#if SIZEOF_VOIDP == SIZEOF_LONG
+  return (unsigned int)sizeof(long)*8-1-__builtin_clzl(i);
+#elif SIZEOF_VOIDP == SIZEOF_LONG_LONG
+  return (unsigned int)sizeof(long long)*8-1-__builtin_clzll(i);
+#else
+#error "No MSB";
+#endif
+}
+
+static inline unsigned int
+MSB64(int64_t i)
+{ return (unsigned int)sizeof(long long)*8-1-__builtin_clzll(i);
+}
 #endif
 
 #ifdef HAVE_GCC_ATOMIC
@@ -144,52 +166,135 @@ __atomic_load_n(size_t *ptr, int memorder)
 #endif
 
 #ifdef O_PLMT
+#ifdef _MSC_VER
+#define ATOMIC_ADD(ptr, v)	_InterlockedExchangeAdd64(ptr, v)
+#define ATOMIC_SUB(ptr, v)	ATOMIC_ADD(ptr, -(v))
+#define ATOMIC_INC(ptr)		_Generic((*ptr), \
+					 int: _InterlockedIncrement((long*)ptr), \
+					 unsigned int: _InterlockedIncrement((long*)ptr), \
+					 size_t: _InterlockedIncrement64((__int64*)ptr), \
+					 __int64: _InterlockedIncrement64((__int64*)ptr))
+#define ATOMIC_DEC(ptr)		_Generic((*ptr), \
+					 int: _InterlockedDecrement((long*)ptr), \
+					 unsigned int: _InterlockedDecrement((long*)ptr), \
+					 size_t:  _InterlockedDecrement64((__int64*)ptr), \
+					 __int64: _InterlockedDecrement64((__int64*)ptr))
+#define ATOMIC_OR(ptr, v)	_Generic((*ptr), \
+					 unsigned short: _InterlockedOr16((short*)ptr, (short)(v)), \
+					 unsigned int: _InterlockedOr((long*)ptr, (long)(v)), \
+					 unsigned __int64: _InterlockedOr64((__int64*)ptr, (__int64)(v)))
+#define ATOMIC_AND(ptr, v)	_Generic((*ptr), \
+					 unsigned short: _InterlockedAnd16((short*)ptr, (short)(v)), \
+					 unsigned int: _InterlockedAnd((long*)ptr, (long)(v)), \
+					 unsigned __int64: _InterlockedAnd64((__int64*)ptr, (__int64)(v)))
+#else
 #define ATOMIC_ADD(ptr, v)	__atomic_add_fetch(ptr, v, __ATOMIC_SEQ_CST)
 #define ATOMIC_SUB(ptr, v)	__atomic_sub_fetch(ptr, v, __ATOMIC_SEQ_CST)
 #define ATOMIC_INC(ptr)		ATOMIC_ADD(ptr, 1) /* ++(*ptr) */
 #define ATOMIC_DEC(ptr)		ATOMIC_SUB(ptr, 1) /* --(*ptr) */
 #define ATOMIC_OR(ptr, v)	__atomic_fetch_or(ptr, v, __ATOMIC_SEQ_CST)
 #define ATOMIC_AND(ptr, v)	__atomic_fetch_and(ptr, v, __ATOMIC_SEQ_CST)
+#endif
 
 #define __COMPARE_AND_SWAP(at, from, to) \
-	__atomic_compare_exchange_n(at, &(from), to, FALSE, \
+	__atomic_compare_exchange_n(at, &(from), to, false, \
 				    __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)
 
 static inline int
 COMPARE_AND_SWAP_PTR(void *at, void *from, void *to)
-{ void **ptr = at;
-
+{
+#ifdef _MSC_VER
+# if SIZEOF_VOIDP == 4
+  return _InterlockedCompareExchange(at, (long)to, (long)from) == (long)from;
+# else
+  return _InterlockedCompareExchange64(at, (int64_t)to, (int64_t)from) == (int64_t)from;
+#endif
+#else
+  void **ptr = at;
   return __COMPARE_AND_SWAP(ptr, from, to);
+#endif
 }
 
 static inline int
 COMPARE_AND_SWAP_INT64(int64_t *at, int64_t from, int64_t to)
-{ return __COMPARE_AND_SWAP(at, from, to);
+{
+#ifdef _MSC_VER
+  return _InterlockedCompareExchange64(at, to, from) == from;
+#else
+  return __COMPARE_AND_SWAP(at, from, to);
+#endif
 }
 
 static inline int
 COMPARE_AND_SWAP_UINT64(uint64_t *at, uint64_t from, uint64_t to)
-{ return __COMPARE_AND_SWAP(at, from, to);
+{
+#ifdef _MSC_VER
+  return _InterlockedCompareExchange64((int64_t *)at, (int64_t)to, (int64_t)from) == from;
+#else
+  return __COMPARE_AND_SWAP(at, from, to);
+#endif
 }
 
 static inline int
 COMPARE_AND_SWAP_INT(int *at, int from, int to)
-{ return __COMPARE_AND_SWAP(at, from, to);
+{
+#ifdef _MSC_VER /* sizeof(int) == sizeof(long) */
+  return _InterlockedCompareExchange(at, to, from) == from;
+#else
+  return __COMPARE_AND_SWAP(at, from, to);
+#endif
 }
 
 static inline int
 COMPARE_AND_SWAP_UINT(unsigned int *at, unsigned int from, unsigned int to)
-{ return __COMPARE_AND_SWAP(at, from, to);
+{
+#ifdef _MSC_VER /* sizeof(int) == sizeof(long) */
+  return _InterlockedCompareExchange((long*)at, (long)to, (long)from) == (long)from;
+#else
+  return __COMPARE_AND_SWAP(at, from, to);
+#endif
 }
 
 static inline int
 COMPARE_AND_SWAP_SIZE(size_t *at, size_t from, size_t to)
-{ return __COMPARE_AND_SWAP(at, from, to);
+{
+#ifdef _MSC_VER
+# if SIZEOF_VOIDP == 4
+  return _InterlockedCompareExchange(at, to, from) == from;
+# else
+  return _InterlockedCompareExchange64(at, to, from) == from;
+#endif
+#else
+  return __COMPARE_AND_SWAP(at, from, to);
+#endif
 }
 
 static inline int
 COMPARE_AND_SWAP_WORD(word *at, word from, word to)
-{ return __COMPARE_AND_SWAP(at, from, to);
+{
+#ifdef _MSC_VER
+# if SIZEOF_VOIDP == 4
+  return _InterlockedCompareExchange(at, to, from) == from;
+# else
+  return _InterlockedCompareExchange64(at, to, from) == from;
+#endif
+#else
+  return __COMPARE_AND_SWAP(at, from, to);
+#endif
+}
+
+static inline int
+COMPARE_AND_SWAP_ATOM(atom_t *at, atom_t from, atom_t to)
+{
+#ifdef _MSC_VER
+# if SIZEOF_ATOM == 4
+  return _InterlockedCompareExchange(at, to, from) == from;
+# else
+  return _InterlockedCompareExchange64(at, to, from) == from;
+#endif
+#else
+  return __COMPARE_AND_SWAP(at, from, to);
+#endif
 }
 
 #else
@@ -207,6 +312,7 @@ COMPARE_AND_SWAP_WORD(word *at, word from, word to)
 #define COMPARE_AND_SWAP_UINT(ptr,o,n)	COMPARE_AND_SWAP(ptr,o,n)
 #define COMPARE_AND_SWAP_SIZE(ptr,o,n)	COMPARE_AND_SWAP(ptr,o,n)
 #define COMPARE_AND_SWAP_WORD(ptr,o,n)	COMPARE_AND_SWAP(ptr,o,n)
+#define COMPARE_AND_SWAP_ATOM(ptr,o,n)	COMPARE_AND_SWAP(ptr,o,n)
 #endif
 
 #ifndef HAVE_MSB
@@ -253,6 +359,17 @@ MSB64(int64_t i)
 #define MEMORY_RELEASE() (void)0
 #endif
 
+#ifndef max
+#define max(x,y) ( \
+	{ __auto_type __x = (x); __auto_type __y = (y); \
+          __x > __y ? __x : __y; \
+	})
+#define min(x,y) ( \
+	{ __auto_type __x = (x); __auto_type __y = (y); \
+          __x < __y ? __x : __y; \
+	})
+#endif
+
 		 /*******************************
 		 *	 ATOMS/FUNCTORS		*
 		 *******************************/
@@ -295,30 +412,35 @@ pushVolatileAtom(DECL_LD atom_t a)
 typedef unsigned int bitv_chunk;
 typedef struct bit_vector
 { size_t size;
-  bitv_chunk chunk[1];				/* bits */
+  bitv_chunk chunk[];				/* bits */
 } bit_vector;
-#define BITSPERE (sizeof(bitv_chunk)*8)
 
-#ifndef offset
-#define offset(s, f) ((size_t)(&((struct s *)NULL)->f))
-#endif
+#define BITSPERE (sizeof(bitv_chunk)*8)
+#define CHUNKS_BITVECTOR(bits) (((bits)+BITSPERE-1)/BITSPERE)
+#define SIZEOF_BITVECTOR(bits) offsetof(struct bit_vector, \
+					chunk[CHUNKS_BITVECTOR(bits)])
 
 static inline size_t
 sizeof_bitvector(size_t bits)
-{ return offset(bit_vector, chunk[(bits+BITSPERE-1)/BITSPERE]);
+{ return offsetof(struct bit_vector, chunk[(bits+BITSPERE-1)/BITSPERE]);
 }
 
 static inline void
 init_bitvector(bit_vector *v, size_t bits)
-{ size_t bytes = offset(bit_vector, chunk[(bits+BITSPERE-1)/BITSPERE]);
+{ size_t bytes = SIZEOF_BITVECTOR(bits);
 
   memset(v, 0, bytes);
   v->size = bits;
 }
 
+#define local_bitvector(name, bits) \
+  bit_vector *name = alloca(SIZEOF_BITVECTOR(bits)); \
+  memset(name->chunk, 0, CHUNKS_BITVECTOR(bits)*sizeof(*name->chunk)); \
+  name->size = bits;
+
 static inline bit_vector *
 new_bitvector(size_t size)
-{ size_t bytes = offset(bit_vector, chunk[(size+BITSPERE-1)/BITSPERE]);
+{ size_t bytes = SIZEOF_BITVECTOR(size);
   bit_vector *v = allocHeapOrHalt(bytes);
 
   memset(v, 0, bytes);
@@ -328,31 +450,33 @@ new_bitvector(size_t size)
 
 static inline void
 free_bitvector(bit_vector *v)
-{ size_t bytes = offset(bit_vector, chunk[(v->size+BITSPERE-1)/BITSPERE]);
+{ size_t bytes = SIZEOF_BITVECTOR(v->size);
 
   freeHeap(v, bytes);
 }
 
 static inline void
 clear_bitvector(bit_vector *v)
-{ size_t chunks = (v->size+BITSPERE-1)/BITSPERE;
+{ size_t chunks = CHUNKS_BITVECTOR(v->size);
 
   memset(v->chunk, 0, chunks*sizeof(bitv_chunk));
 }
 
 static inline void
 setall_bitvector(bit_vector *v)
-{ size_t chunks = (v->size+BITSPERE-1)/BITSPERE;
+{ size_t chunks = CHUNKS_BITVECTOR(v->size);
 
   memset(v->chunk, 0xff, chunks*sizeof(bitv_chunk));
 }
 
-static inline void
+static inline bool		/* true when set, false when already set */
 set_bit(bit_vector *v, size_t which)
 { size_t e = which/BITSPERE;
   size_t b = which%BITSPERE;
 
+  bool rc = (v->chunk[e]&((bitv_chunk)1<<b)) == 0;
   v->chunk[e] |= ((bitv_chunk)1<<b);
+  return rc;
 }
 
 static inline void
@@ -363,7 +487,7 @@ clear_bit(bit_vector *v, size_t which)
   v->chunk[e] &= ~((bitv_chunk)1<<b);
 }
 
-static inline int
+static inline bool
 true_bit(bit_vector *v, size_t which)
 { size_t e = which/BITSPERE;
   size_t b = which%BITSPERE;
@@ -393,7 +517,7 @@ static int	  same_type_numbers(Number n1, Number n2) WUNUSED;
 static inline int
 same_type_numbers(Number n1, Number n2)
 { if ( n1->type == n2->type )
-    return TRUE;
+    return true;
   return make_same_type_numbers(n1, n2);
 }
 
@@ -415,18 +539,17 @@ Trail(DECL_LD Word p, word v)
 }
 
 
-#define consPtrB(p, base, ts)	f_consPtr(p, (uintptr_t)(base), ts)
-#define consPtr(p, ts)		consPtrB(p, LD->bases[(ts)&STG_MASK], (ts))
-#define f_consPtr(p, base, ts) LDFUNC(f_consPtr, p, base, ts)
 static inline word
-f_consPtr(DECL_LD void *p, uintptr_t base, word ts)
-{ uintptr_t v = (uintptr_t) p;
+consPtr(void *p, word ts)
+{ word v = ptr2word(p);
 
-  v -= base;
-  DEBUG(CHK_SECURE, assert(v < MAXTAGGEDPTR && !(v&0x3)));
-  return (v<<5)|ts;
+  return (v<<LMASK_BITS)|ts;
 }
 
+static inline Word
+valPtr(word w)
+{ return word2ptr(Word, w>>LMASK_BITS);
+}
 
 #if ALIGNOF_DOUBLE == ALIGNOF_VOIDP
 #define valFloat(w) (*(double *)valIndirectP(w))
@@ -439,30 +562,6 @@ valFloat(DECL_LD word w)
 
   memcpy(&d, p, sizeof(d));
   return d;
-}
-#endif
-
-
-#if ALIGNOF_INT64_T == ALIGNOF_VOIDP
-#define valBignum(w) (*(int64_t *)valIndirectP(w))
-#else
-#define valBignum(w) LDFUNC(valBignum, w)
-static inline int64_t
-valBignum(DECL_LD word w)
-{ Word p = valIndirectP(w);
-  union
-  { int64_t i;
-    word w[WORDS_PER_INT64];
-  } val;
-
-#if ( SIZEOF_VOIDP == 4 )
-  val.w[0] = p[0];
-  val.w[1] = p[1];
-#else
-#error "Unsupported int64_t alignment conversion"
-#endif
-
-  return val.i;
 }
 #endif
 
@@ -484,15 +583,12 @@ checking (unless compiled for debugging) and fetches the base address of
 the global stack only once.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define linkValI(p) LDFUNC(linkValI, p)
 static inline word
-linkValI(DECL_LD Word p)
+linkValI(Word p)
 { word w = *p;
-  uintptr_t gb = LD->bases[STG_GLOBAL];
 
   while(isRef(w))
-  { //p = unRef(w);
-    p = (Word)valPtrB(w,gb);
+  { p = unRef(w);
     w = *p;
   }
 
@@ -501,20 +597,22 @@ linkValI(DECL_LD Word p)
   if ( !needsRef(w) )
   { return w;
   } else
-  { // return makeRefG(p);
-    DEBUG(0, assert(p<(Word)lBase));
-    return consPtrB(p, gb, TAG_REFERENCE|STG_GLOBAL);
+  { DEBUG(0, assert(p<(Word)lBase));
+    return makeRefG(p);
   }
 }
 
 #define is_signalled(_) LDFUNC(is_signalled, _)
-static inline int
+static inline bool
 is_signalled(DECL_LD)
-{ if (!HAS_LD) return FALSE;
-  for (int i = 0; i < SIGMASK_WORDS; i++)
-  { if (unlikely(LD->signal.pending[i] != 0)) return TRUE;
+{ sigmask_t msk = 0;
+
+  if ( HAS_LD )
+  { for (int i = 0; i < SIGMASK_WORDS; i++)
+      msk |= LD->signal.pending[i];
   }
-  return FALSE;
+
+  return !!msk;
 }
 
 #define register_attvar(gp) LDFUNC(register_attvar, gp)
@@ -533,8 +631,15 @@ register_attvar(DECL_LD Word gp)
   LD->attvar.attvars = gp;
 }
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+True when clause  is visible at generation.  This notably  needs to be
+critically aligned with committing  or discarding transactions.  These
+operations       update      cl->generation.erased       and      next
+cl->generation.created.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
 #define visibleClause(cl, gen) LDFUNC(visibleClause, cl, gen)
-static inline int
+static inline bool
 visibleClause(DECL_LD Clause cl, gen_t gen)
 { gen_t c, e;
 
@@ -543,27 +648,27 @@ visibleClause(DECL_LD Clause cl, gen_t gen)
   e = cl->generation.erased;
 
   if ( unlikely(e == LD->reload.generation) )
-    return FALSE;
+    return false;
   if ( unlikely(c == LD->reload.generation) )
-    return TRUE;
+    return true;
 
   if ( c <= gen && e > gen )
-    return TRUE;
+    return true;
 
   if ( unlikely(LD->transaction.gen_base && gen >= LD->transaction.gen_base) &&
-       true(cl->predicate, P_DYNAMIC) )
+       ison(cl->predicate, P_TRANSACT) )
     return transaction_visible_clause(cl, gen);
 
-  return FALSE;
+  return false;
 }
 
 #define visibleClauseCNT(cl, gen) LDFUNC(visibleClauseCNT, cl, gen)
-static inline int
+static inline bool
 visibleClauseCNT(DECL_LD Clause cl, gen_t gen)
 { if ( likely(visibleClause(cl, gen)) )
-    return TRUE;
+    return true;
   LD->clauses.erased_skipped++;
-  return FALSE;
+  return false;
 }
 
 static inline gen_t
@@ -574,7 +679,7 @@ global_generation(void)
 #define current_generation(def) LDFUNC(current_generation, def)
 static inline gen_t
 current_generation(DECL_LD Definition def)
-{ if ( unlikely(!!LD->transaction.generation) && def && true(def, P_DYNAMIC) )
+{ if ( unlikely(!!LD->transaction.generation) && def && ison(def, P_TRANSACT) )
   { return LD->transaction.generation;
   } else
   { return GD->_generation;
@@ -584,7 +689,7 @@ current_generation(DECL_LD Definition def)
 #define next_generation(def) LDFUNC(next_generation, def)
 static inline gen_t
 next_generation(DECL_LD Definition def)
-{ if ( unlikely(!!LD->transaction.generation) && def && true(def, P_DYNAMIC) )
+{ if ( unlikely(!!LD->transaction.generation) && def && ison(def, P_TRANSACT) )
   { if ( LD->transaction.generation < LD->transaction.gen_max )
       return ++LD->transaction.generation;
     return 0;
@@ -602,7 +707,7 @@ next_generation(DECL_LD Definition def)
 #define max_generation(def) LDFUNC(max_generation, def)
 static inline gen_t
 max_generation(DECL_LD Definition def)
-{ if ( unlikely(!!LD->transaction.generation) && def && true(def, P_DYNAMIC) )
+{ if ( unlikely(!!LD->transaction.generation) && def && ison(def, P_TRANSACT) )
     return LD->transaction.gen_max;
   else
     return GEN_MAX;
@@ -623,7 +728,7 @@ generation is updated and thus no harm is done.
 static inline void
 setGenerationFrame(DECL_LD LocalFrame fr)
 { if ( unlikely(LD->transaction.generation &&
-		true(fr->predicate, P_DYNAMIC)) )
+		ison(fr->predicate, P_TRANSACT)) )
   { setGenerationFrameVal(fr, LD->transaction.generation);
   } else
   { gen_t gen;
@@ -657,6 +762,13 @@ mask) and may never be 0.
 #define KEY_INDEX_MAX 4
 
 static inline word
+clean_index_key(word key)
+{ key &= ~((word)STG_GLOBAL);
+  if ( !key ) key = 1;
+  return key;
+}
+
+static inline word
 murmur_key(const void *ptr, size_t n)
 { word k;
 
@@ -676,10 +788,7 @@ murmur_key(const void *ptr, size_t n)
   { k = MurmurHashAligned2(ptr, n, MURMUR_SEED);
   }
 
-  k &= ~((word)STG_GLOBAL);
-  if ( !k ) k = 1;
-
-  return k;
+  return clean_index_key(k);
 }
 
 		 /*******************************

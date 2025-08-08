@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1997-2023, University of Amsterdam
+    Copyright (c)  1997-2025, University of Amsterdam
                               VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -101,7 +101,8 @@ struct PL_global_data
   int		io_initialised;		/* I/O system has been initialised */
   cleanup_status cleaning;		/* Inside PL_cleanup() */
   int		halt_cancelled;		/* Times halt was cancelled */
-  int		bootsession;		/* -b boot compilation */
+  int		halt_status;		/* For killing threads */
+  unsigned int	bootsession;		/* -b boot compilation */
   int		debug_level;		/* Maintenance debugging: 0..9 */
   struct bit_vector *debug_topics;	/* debug topics enabled */
 
@@ -178,7 +179,7 @@ struct PL_global_data
   } modules;
 
   struct
-  { Table	modules;		/* atom --> module */
+  { TableWP	modules;		/* atom --> module */
   } tables;
 
 #if O_PLMT
@@ -196,7 +197,7 @@ struct PL_global_data
 #endif
 
   struct
-  { Table	record_lists;		/* Available record lists */
+  { TableWP	record_lists;		/* Key -> record list */
   } recorded_db;
 
   struct
@@ -231,7 +232,7 @@ struct PL_global_data
   } atoms;
 
   struct
-  { Table	breakpoints;		/* Breakpoint table */
+  { TablePP	breakpoints;		/* Code -> Breakpoint table */
   } comp;
 
   struct
@@ -254,15 +255,15 @@ struct PL_global_data
 #endif
 
   struct				/* pl-format.c */
-  { Table	predicates;
+  { TableWP	predicates;
   } format;
 
   struct
-  { Table	table;			/* flag key --> flag */
+  { TableWP	table;			/* flag key --> flag */
   } flags;
 
   struct
-  { Table	table;			/* global (read-only) features */
+  { TableWP	table;			/* global (read-only) features */
   } prolog_flag;
 
   struct
@@ -364,7 +365,7 @@ struct PL_global_data
 
     int		static_dirty;		/* #static dirty procedures */
 #ifdef O_CLAUSEGC
-    Table	dirty;			/* Table of dirty procedures */
+    TablePP	dirty;			/* Table of dirty procedures */
 #endif
   } procedures;
 
@@ -388,13 +389,23 @@ struct PL_global_data
     int		cgc_space_factor;	/* Max total/margin garbage */
     double	cgc_stack_factor;	/* Price to scan stack space */
     double	cgc_clause_factor;	/* Pce to scan clauses */
+    Clause	top_clause;		/* See PL_open_query() */
+    struct clause_ref top_cref;		/* Its reference */
   } clauses;
+
+  struct
+  { float	min_speedup;
+    float	max_var_fraction;
+    float	min_speedup_ratio;
+    int		max_lookahead;
+    int		min_clauses;
+  } clause_index;
 
   struct
   { size_t	highest;		/* highest source file index */
     size_t	no_hole_before;		/* All filled before here */
     srcfile_array array;		/* index --> file */
-    Table	table;			/* name  --> file */
+    TableWP	table;			/* name  --> file */
   } files;
 
 #ifdef HAVE_TGETENT
@@ -403,7 +414,7 @@ struct PL_global_data
     char  *_string_area;		/* static area for tgetstr */
     char  *_string_area_end;		/* end of _string_area */
     char  *_buf_area;			/* static area for tgetent */
-    Table  _capabilities;		/* User-level capability table */
+    TableWP _capabilities;		/* User-level capability table */
   } terminal;
 #endif
 
@@ -421,7 +432,7 @@ struct PL_global_data
 #ifdef O_PLMT
     int			enabled;	/* threads are enabled */
     int			mutex_next_id;	/* next id for anonymous mutexes */
-    Table		mutexTable;	/* Name --> mutex table */
+    TableWP		mutexTable;	/* Name --> mutex table */
     counting_mutex     *mutexes;	/* Registered mutexes */
     struct
     { pthread_mutex_t	mutex;
@@ -444,7 +455,7 @@ struct PL_global_data
 
 #ifdef O_LOCALE
   struct
-  { Table		localeTable;	/* Name --> locale table */
+  { TableWP		localeTable;	/* Name --> locale table */
     PL_locale	       *default_locale;	/* System wide default */
   } locale;
 #endif
@@ -475,14 +486,12 @@ struct PL_local_data
 #endif
   Code		fast_condition;		/* Fast condition support */
   pl_stacks_t   stacks;			/* Prolog runtime stacks */
-  uintptr_t	bases[STG_MASK+1];	/* area base addresses */
   int		alerted;		/* Special mode. See updateAlerted() */
   int		slow_unify;		/* do not use inline unification */
   int		critical;		/* heap is being modified */
   int		break_level;		/* current break level */
   Stack		outofstack;		/* thread is out of stack */
   int		trim_stack_requested;	/* perform a trim-stack */
-  int		in_arithmetic;		/* doing arithmetic */
   int		in_print_message;	/* Inside printMessage() */
   void *	glob_info;		/* pl-glob.c */
   IOENC		encoding;		/* default I/O encoding */
@@ -534,8 +543,8 @@ struct PL_local_data
     term_t	tmp;			/* tmp for errors */
     term_t	pending;		/* used by the debugger */
     term_t	fr_rewritten;		/* processed by exception_hook() */
-    int		in_hook;		/* inside exception_hook() */
-    int		processing;		/* processing an exception */
+    bool	in_hook;		/* inside exception_hook() */
+    bool	processing;		/* processing an exception */
     exception_frame *throw_environment;	/* PL_throw() environments */
   } exception;
 
@@ -570,6 +579,14 @@ struct PL_local_data
     uint64_t	frequency;		/* How often do we fire */
   } yield;
 
+#ifdef __EMSCRIPTEN__
+  struct
+  { term_t yield_request;		/* See '$await'/2 in wasm/pl-wasm.c */
+    term_t yield_result;
+    bool   yield_unified;
+  } wasm;
+#endif
+
   struct
   { uint64_t	inferences;		/* inferences in this thread */
     uint64_t	last_cputime;		/* milliseconds last CPU time */
@@ -585,11 +602,8 @@ struct PL_local_data
 
 #ifdef O_BIGNUM
   struct
-  { int		persistent;		/* do persistent operations */
-    size_t	allocated;		/* memory allocated */
-    ar_context *context;		/* current allocation context */
-    mp_mem_header *head;		/* linked list of allocated chunks */
-    mp_mem_header *tail;
+  { ar_context *context;		/* current allocation context */
+    size_t	max_integer_size;	/* Max size of MPZ data */
   } gmp;
 #endif
 
@@ -675,7 +689,7 @@ struct PL_local_data
     int	has_scheduling_component;	/* A leader was created */
     int in_answer_completion;		/* Running answer completion */
     int in_assert_propagation;		/* Running propagate_assert/1 */
-    int flags;				/* Global flags (TF_*) */
+    unsigned int flags;			/* Global flags (TF_*) */
     term_t delay_list;			/* Global delay list */
     term_t idg_current;			/* Current node in IDG (trie symbol) */
     struct
@@ -700,24 +714,33 @@ struct PL_local_data
   } os;
 
   struct
-  { Table	  table;		/* Feature table */
+  { TableWP	  table;		/* local Prolog flag table */
     pl_features_t mask;			/* Masked access to booleans */
     int		  write_attributes;	/* how to write attvars? */
     occurs_check_t occurs_check;	/* Unify and occurs check */
     access_level_t access_level;	/* Current access level */
+    unsigned int   unknown_option;	/* OPT_UNKNOWN_* */
   } prolog_flag;
 
   struct
   { FindData	find;			/* /<ports> <goal> in tracer */
+    struct
+    { char	resume_action;		/* Restart after yield */
+      short	port;			/* Port on which we stopped */
+      bool	nodebug;		/* continue in nodebug mode */
+      struct
+      { bool	is_jump;		/* Distinguish the two REDO ports */
+	struct clause_choice chp;	/* Clause redo context */
+      } redo;
+      struct
+      { term_t	catchfr_ref;		/* Catching frame reference */
+	Stack	outofstack;		/* We are processing an out-of-stack */
+	bool	start_tracer;		/* Start debugger asap */
+      } exception;
+    } yield;
   } trace;
 
-  struct
-  { struct findall_bag *bags;		/* Known bags */
-    struct findall_bag *default_bag;	/* Bag we keep around */
-#if defined(O_ATOMGC) && defined(O_PLMT)
-    simpleMutex mutex;			/* Atom GC scanning synchronization */
-#endif
-  } bags;
+  struct findall_state *bags;		/* findall/3 store  */
 
   struct
   { AbortHandle	_abort_head;		/* PL_abort_hook() */
@@ -775,12 +798,12 @@ struct PL_local_data
     DefinitionChain local_definitions;	/* P_THREAD_LOCAL predicates */
     int magic;				/* PL_THREAD_MAGIC (checking) */
     int exit_requested;			/* Thread is asked to exit */
+    struct _PL_thread_info_t *creator;	/* Thread that created me */
+    uint64_t creator_seq_id;		/* Seq id of creater */
 #ifdef O_PLMT
     simpleMutex scan_lock;		/* Hold for asynchronous scans */
     thread_wait_for *waiting_for;	/* thread_wait/2 info */
     alert_channel alert;		/* How to alert the thread */
-    struct _PL_thread_info_t *creator;	/* Thread that created me */
-    uint64_t creator_seq_id;		/* Seq id of creater */
     double child_cputime;		/* Time of completed children */
     uint64_t child_inferences;		/* Inferences in children */
 #endif
@@ -793,8 +816,8 @@ struct PL_local_data
     gen_t	      gen_max;		/* Transaction max gen */
     gen_t	      gen_nest;		/* Start of nested generation */
     gen_t	      generation;	/* Local current generation */
-    Table	      clauses;		/* Affected clauses */
-    Table	      predicates;	/* Pred --> last modified */
+    TablePW	      clauses;		/* Affected clauses */
+    TablePW	      predicates;	/* Pred --> last modified */
     struct tbl_trail *table_trail;	/* Affected tables */
     term_t	      id;		/* Default the goal */
     struct tr_stack  *stack;		/* Nested transaction stack */
@@ -814,8 +837,8 @@ struct PL_local_data
 
 #ifdef O_COVERAGE
   struct
-  { Table	table;			/* Table for recording data */
-    int		active;			/* We are recording */
+  { struct coverage *data;		/* Data for the coverage collection */
+    int		     active;		/* This thread is recording */
   } coverage;
 #endif
 
@@ -836,18 +859,18 @@ struct PL_local_data
   } undo;
 
   struct
-  { intptr_t _total_marked;		/* # marked global cells */
-    intptr_t _trailcells_deleted;	/* # garbage trailcells */
-    intptr_t _relocation_chains;	/* # relocation chains (debugging) */
-    intptr_t _relocation_cells;		/* # relocation cells */
-    intptr_t _relocated_cells;		/* # relocated cells */
-    intptr_t _needs_relocation;		/* # cells that need relocation */
-    intptr_t _local_marked;		/* # marked local -> global ptrs */
-    intptr_t _marks_swept;		/* # marks swept */
-    intptr_t _marks_unswept;		/* # marks swept */
-    intptr_t _alien_relocations;	/* # alien_into_relocation_chain() */
-    intptr_t _local_frames;		/* frame count for debugging */
-    intptr_t _choice_count;		/* choice-point count for debugging */
+  { size_t _total_marked;		/* # marked global cells */
+    size_t _trailcells_deleted;		/* # garbage trailcells */
+    size_t _relocation_chains;		/* # relocation chains (debugging) */
+    size_t _relocation_cells;		/* # relocation cells */
+    size_t _relocated_cells;		/* # relocated cells */
+    size_t _needs_relocation;		/* # cells that need relocation */
+    size_t _local_marked;		/* # marked local -> global ptrs */
+    size_t _marks_swept;		/* # marks swept */
+    size_t _marks_unswept;		/* # marks swept */
+    size_t _alien_relocations;		/* # alien_into_relocation_chain() */
+    size_t _local_frames;		/* frame count for debugging */
+    size_t _choice_count;		/* choice-point count for debugging */
     int  *_start_map;			/* bitmap with legal global starts */
     sigset_t saved_sigmask;		/* Saved signal mask */
     int64_t inferences;			/* #inferences at last GC */
@@ -865,8 +888,8 @@ struct PL_local_data
     intptr_t _trailtops_marked;		/* # marked trailtops */
     Word *_mark_base;			/* Array of marked cells addresses */
     Word *_mark_top;			/* Top of this array */
-    Table _check_table;			/* relocation address table */
-    Table _local_table;			/* marked local variables */
+    TablePW _check_table;		/* relocation address table */
+    TablePW _local_table;		/* marked local variables */
     int  _relocated_check;		/* Verify relocated addresses? */
     unsigned int incr_seed;		/* Seed for random stack increments */
 #endif
@@ -898,13 +921,12 @@ GLOBAL PL_local_data_t *PL_current_engine_ptr;
 #define exception_printed	(LD->exception.printed)
 #define gc_status		(LD->gc.status)
 #define debugstatus		(LD->_debugstatus)
-#define base_addresses		(LD->bases)
-#define Suser_input		(LD->IO.streams[0])
-#define Suser_output		(LD->IO.streams[1])
-#define Suser_error		(LD->IO.streams[2])
-#define Scurin			(LD->IO.streams[3])
-#define Scurout			(LD->IO.streams[4])
-#define Sprotocol		(LD->IO.streams[5])
+#define Suser_input		(LD->IO.streams[SNO_USER_INPUT])
+#define Suser_output		(LD->IO.streams[SNO_USER_OUTPUT])
+#define Suser_error		(LD->IO.streams[SNO_USER_ERROR])
+#define Scurin			(LD->IO.streams[SNO_CURRENT_INPUT])
+#define Scurout			(LD->IO.streams[SNO_CURRENT_OUTPUT])
+#define Sprotocol		(LD->IO.streams[SNO_PROTOCOL])
 #define Sdin			Suser_input		/* not used for now */
 #define Sdout			Suser_error
 

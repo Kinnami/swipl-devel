@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2007-2013, University of Amsterdam
+    Copyright (c)  2007-2024, University of Amsterdam
                               VU University Amsterdam
+                              SWI-Prolog solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -73,33 +74,44 @@ emptySegStack(segstack *s)
 	 (s->last == NULL || s->last->previous == NULL);
 }
 
+/* Note that the C standard does not allow operations on NULL
+   pointers other than comparing equal to NULL.  For this reason
+   we need the `(stack)->top` condition.  I hope most C compiler
+   will delete the redundant condition.
+ */
+
+#define segStackHasData(stack)				\
+  ((stack)->top && (stack)->top > (stack)->base)
+#define segStackHasSpace(stack, size)				\
+  ((stack)->top && (stack)->top + (size) <= (stack)->max)
 
 #define popSegStack(stack, to, type) \
-	( ((stack)->top >= (stack)->base + sizeof(type))	\
+	( segStackHasData(stack)				\
 		? ( (stack)->top -= sizeof(type),		\
 		    *to = *(type*)(stack)->top,			\
-		    TRUE					\
+		    true					\
 		  )						\
-		: !(stack)->last || !(stack)->last->previous ? FALSE \
+		: !(stack)->last || !(stack)->last->previous ? false \
 		: popSegStack_((stack), to)			\
 	)
 
 #define pushSegStack(stack, data, type) \
-	( ((stack)->top + sizeof(type) <= (stack)->max)	\
+	( segStackHasSpace(stack, sizeof(type))			\
 		? ( *(type*)(stack)->top = data,		\
 		    (stack)->top += sizeof(type),		\
-		    TRUE					\
+		    true					\
 		  )						\
-		: pushSegStack_((stack), &data)			\
+		: !!pushSegStack_((stack), &data)		\
 	)
 
-COMMON(int)	pushSegStack_(segstack *stack, void* data) WUNUSED;
+COMMON(void*)	pushSegStack_(segstack *stack, void* data) WUNUSED;
 COMMON(int)	pushRecordSegStack(segstack *stack, Record r) WUNUSED;
 COMMON(int)	popSegStack_(segstack *stack, void *data);
 COMMON(void*)	topOfSegStack(segstack *stack);
 COMMON(void)	popTopOfSegStack_(segstack *stack);
 COMMON(void)	scanSegStack(segstack *s, void (*func)(void *cell));
 COMMON(void)	clearSegStack_(segstack *s);
+COMMON(void)	free_segstack_chunks(segchunk *c);
 
 		 /*******************************
 		 *	       INLINE		*
@@ -110,6 +122,19 @@ clearSegStack(segstack *s)
 { if ( s->first )
     clearSegStack_(s);
 }
+
+
+static inline void
+discardSegStack(segstack *s)
+{ segchunk *c = s->first;
+
+  if ( c )
+  { if ( !c->allocated )
+      c = c->next;
+    free_segstack_chunks(c);
+  }
+}
+
 
 
 static inline void
@@ -144,10 +169,10 @@ static inline int
 quickPopTopOfSegStack(segstack *stack)
 { if ( stack->top >= stack->base + stack->unit_size )
   { stack->top -= stack->unit_size;
-    return TRUE;
+    return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 

@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2007-2020, University of Amsterdam
+    Copyright (c)  2007-2024, University of Amsterdam
                               VU University Amsterdam
 			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -54,21 +55,36 @@ data before updating the pointers.
 TBD: Avoid instruction/cache write reordering in push/pop.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-int
-pushSegStack_(segstack *stack, void *data)
-{ if ( stack->top + stack->unit_size <= stack->max )
-  { memcpy(stack->top, data, stack->unit_size);
-    stack->top += stack->unit_size;
-
-    return TRUE;
+static size_t
+next_chunk_size(segstack *stack)
+{ if ( stack->last && stack->last->allocated )
+  { return stack->last->size*2;
   } else
-  { size_t chunksize = tmp_nalloc((size_t)1024<<stack->chunk_count++);
+  { size_t size = 1024;
+    while(size < 4*stack->unit_size)
+      size *= 2;
+    return size;
+  }
+}
+
+void *
+pushSegStack_(segstack *stack, void *data)
+{ if ( segStackHasSpace(stack, stack->unit_size) )
+  { char *ptr = stack->top;
+
+    if ( data )
+      memcpy(ptr, data, stack->unit_size);
+    stack->top = ptr+stack->unit_size;
+
+    return ptr;
+  } else
+  { size_t chunksize = tmp_nalloc(next_chunk_size(stack));
     segchunk *chunk = tmp_malloc(chunksize);
 
     if ( !chunk )
-      return FALSE;			/* out of memory */
+      return NULL;			/* out of memory */
 
-    chunk->allocated = TRUE;
+    chunk->allocated = true;
     chunk->size = chunksize;
     chunk->next = NULL;
     chunk->previous = stack->last;
@@ -85,10 +101,11 @@ pushSegStack_(segstack *stack, void *data)
 
     stack->base = CHUNK_DATA(chunk);
     stack->max  = addPointer(chunk, chunk->size);
-    memcpy(CHUNK_DATA(chunk), data, stack->unit_size);
+    if ( data )
+      memcpy(CHUNK_DATA(chunk), data, stack->unit_size);
     stack->top  = CHUNK_DATA(chunk) + stack->unit_size;
 
-    return TRUE;
+    return CHUNK_DATA(chunk);
   }
 }
 
@@ -101,9 +118,9 @@ pushRecordSegStack(segstack *stack, Record r)
     *rp++ = r;
     stack->top = (char*)rp;
 
-    return TRUE;
+    return true;
   } else
-  { return pushSegStack_(stack, &r);
+  { return !!pushSegStack_(stack, &r);
   }
 }
 
@@ -117,11 +134,12 @@ int
 popSegStack_(segstack *stack, void *data)
 { again:
 
-  if ( stack->top >= stack->base + stack->unit_size )
+  if ( segStackHasData(stack) )
   { stack->top -= stack->unit_size;
-    memcpy(data, stack->top, stack->unit_size);
+    if ( data )
+      memcpy(data, stack->top, stack->unit_size);
 
-    return TRUE;
+    return true;
   } else
   { segchunk *chunk = stack->last;
 
@@ -141,7 +159,7 @@ popSegStack_(segstack *stack, void *data)
       }
     }
 
-    return FALSE;
+    return false;
   }
 }
 
@@ -211,8 +229,8 @@ Therefore $collect_findall_bag/2 locks if it needs to call the expensive
 chunk-popping popTopOfSegStack_().
 
 With thanks to Eugeniy Meshcheryakov for   finding this and running many
-tests. The issue is triggered by Tests/thread_agc_findall.pl, notably on
-slow single core hardware.
+tests. The issue  is   triggered  by tests/thread/thread_agc_findall.pl,
+notably on slow single core hardware.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static inline void
@@ -243,6 +261,15 @@ scanSegStack(segstack *stack, void (*func)(void *cell))
   }
 }
 
+void
+free_segstack_chunks(segchunk *c)
+{ segchunk *n;
+
+  for(; c; c = n)
+  { n = c->next;
+    tmp_free(c);
+  }
+}
 
 void
 clearSegStack_(segstack *s)
@@ -258,15 +285,9 @@ clearSegStack_(segstack *s)
     s->max  = addPointer(c, c->size);
     s->chunk_count = 1;
 
-    for(c=n; c; c = n)
-    { n = c->next;
-      tmp_free(c);
-    }
+    free_segstack_chunks(n);
   } else				/* all dynamic chunks */
-  { for(; c; c = n)
-    { n = c->next;
-      tmp_free(c);
-    }
+  { free_segstack_chunks(c);
     memset(s, 0, sizeof(*s));
   }
 }

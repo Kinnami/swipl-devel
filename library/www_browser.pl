@@ -94,7 +94,8 @@ open_url(URL) :-
     run_command(Command, [URL], Mode).
 :- if(current_predicate(win_shell/2)).
 open_url(URL) :-                        % Windows shell
-    win_shell(open, URL).
+    win_shell(open, URL),
+    !.
 :- endif.
 open_url(URL) :-                        % Unix `open document'
     open_command(Open),
@@ -241,6 +242,8 @@ expand_url_path(Spec, URL) :-
         ->  URL = URL0
         ;   sub_atom(Local, 0, _, _, #)
         ->  atom_concat(URL0, Local, URL)
+        ;   sub_atom(URL0, 0, _, _, /)
+        ->  absolute_file_name(Local, URL, [relative_to(URL0)])
         ;   atomic_list_concat([URL0, Local], /, URL)
         )
     ;   throw(error(existence_error(url_path, Path), expand_url_path/2))

@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2016, University of Amsterdam
+    Copyright (c)  1985-2024, University of Amsterdam
                               VU University Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -36,6 +37,8 @@
 :- module(toplevel_variables,
           [ print_toplevel_variables/0,
             verbose_expansion/1,
+            '$replace_toplevel_vars'/4,
+            '$save_toplevel_vars'/1,            % +Bindings
             '$switch_toplevel_mode'/1           % +Mode
           ]).
 
@@ -45,11 +48,7 @@
 % define the operator globally
 :- op(1, fx, user:($)).
 
-:- public
-    expand_query/4,         % +Query0, -Query, +Bindings0, -Bindings
-    expand_answer/2.        % +Answer0, -Answer
-
-%!  expand_query(+Query0, -Query, +Bindings0, -Bindings) is det.
+%!  '$replace_toplevel_vars'(+Query0, -Query, +Bindings0, -Bindings) is det.
 %
 %   These predicates realise reuse of   toplevel variables using the
 %   $Var notation. These hooks are   normally called by toplevel.pl.
@@ -57,8 +56,8 @@
 %   these implementations may be  called  (or   not)  to  define the
 %   interaction with the user hooks.
 
-expand_query(Query, Expanded, Bindings, ExpandedBindings) :-
-    phrase(expand_vars(Bindings, Query, Expanded), NewBindings),
+'$replace_toplevel_vars'(Query, Expanded, Bindings, ExpandedBindings) :-
+    expand_vars(Bindings, Query, Expanded, NewBindings),
     term_variables(Expanded, Free),
     delete_bound_vars(Bindings, Free, ExpandedBindings0),
     '$append'(ExpandedBindings0, NewBindings, ExpandedBindings),
@@ -79,11 +78,20 @@ bind_vars([Name=Value|Rest]) :-
     Name = Value,
     bind_vars(Rest).
 
-%!  expand_vars(+Bindings, +Query, -Expanded)//
+%!  expand_vars(+Bindings, +Query, -Expanded, -NewBindings) is det.
 %
 %   Replace $Var terms inside Query by   the  toplevel variable term
 %   and unify the result with  Expanded. NewBindings gets Name=Value
 %   terms for toplevel variables that are bound to non-ground terms.
+%
+%   @error existence_error(answer_variable, Name)
+
+expand_vars(Bindings, Query, Expanded, NewBindings) :-
+    current_prolog_flag(toplevel_var_size, Count),
+    Count > 0,
+    !,
+    phrase(expand_vars(Bindings, Query, Expanded), NewBindings).
+expand_vars(Bindings, Query, Query, Bindings).
 
 expand_vars(_, Var, Var) -->
     { var(Var) },
@@ -137,12 +145,16 @@ v_member(V, [H|T]) :-
     ;   v_member(V, T)
     ).
 
-%!  expand_answer(+Answer0, -Answer) is det.
+%!  '$save_toplevel_vars'(+Bindings) is det.
 %
 %   Save toplevel variable bindings.
 
-expand_answer(Bindings, Bindings) :-
-    assert_bindings(Bindings).
+'$save_toplevel_vars'(Bindings) :-
+    (   current_prolog_flag(toplevel_var_size, Count),
+        Count > 0
+    ->  assert_bindings(Bindings)
+    ;   true
+    ).
 
 assert_bindings([]).
 assert_bindings([Var = Value|Tail]) :-

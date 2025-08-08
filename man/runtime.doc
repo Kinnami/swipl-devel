@@ -152,7 +152,7 @@ File to use for the emulator or executable used by the startup script.
 Default is the running Prolog image \emph{after} following symbolic
 links, e.g., \file{/usr/lib/swipl/lib/x86_64-linux/swipl}.  To create
 a saved state based on the public executable such that it can run on
-multiple archirectures one can use e.g.
+multiple architectures one can use e.g.
 
 \begin{code}
 $ swipl -o myexe --emulator=$(which swipl) -c myload.pl
@@ -206,6 +206,19 @@ for armv7 if even if the code will be running on newer arm CPUs. It
 is also useful to provide highly-optimized shared objects for
 particular architectures.
 
+If \arg{Action} is \textbf{copy}, the foreign extensions are copied to
+the installation location.  This feature is currently only supported
+for Windows, where both DLLs required to run \program{swipl.exe} and
+DLLs loaded through extensions are are copied to the same directory as
+where the executable is saved.  Required DLLs are found using
+win_process_modules/2.  Thus, we can create an executable using e.g.,
+
+\begin{code}
+swipl -o dist/myprog.exe --foreign=copy -c myprog.pl
+\end{code}
+
+The \exam{--foreign=copy} option is introduced in 9.3.6.
+
 	\termitem{undefined}{+Value}
 Defines what happens if an undefined predicate is found during the
 code analysis.  Values are \const{ignore} (default) or \const{error}.
@@ -225,7 +238,7 @@ Equivalent to \exam{qsave_program(File, [])}.
 
     \predicate{autoload_all}{0}{}
 Check the current Prolog program for predicates that are referred to,
-are undefined and have a definition in the Prolog library.  Load the
+are undefined, and have a definition in the Prolog library.  Load the
 appropriate libraries.
 
 This predicate is used by qsave_program/[1,2] to ensure the saved state
@@ -320,6 +333,13 @@ reinitialise such references using the normal program initialization
 techniques: use initialization/1,2 directives, explicitly create them
 by the entry point or make the various components recreate the context
 lazily when required.
+
+    \item
+\jargon{Blobs} that properly implement the save() and load() callbacks
+can be saved and restored. By default a blob is saved as an array of bytes,
+of the internal form of the blob. This means that any saved program
+using such a blob is probably not portable to a different architecture.
+
 \end{itemize}
 
 

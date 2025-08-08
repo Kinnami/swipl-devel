@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2022, University of Amsterdam
+    Copyright (c)  2011-2024, University of Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -50,11 +50,22 @@ typedef enum iri_op
   IRI_TIME		/* -> double *time */
 } iri_op;
 
+#define SNO_USER_INPUT     0
+#define SNO_USER_OUTPUT    1
+#define SNO_USER_ERROR     2
+#define SNO_CURRENT_INPUT  3
+#define SNO_CURRENT_OUTPUT 4
+#define SNO_PROTOCOL       5
+#define SNO_MAX		   5
+
 #if USE_LD_MACROS
 #define	getTextInputStream(t, s)	LDFUNC(getTextInputStream, t, s)
 #define	getBinaryInputStream(t, s)	LDFUNC(getBinaryInputStream, t, s)
 #define	getTextOutputStream(t, s)	LDFUNC(getTextOutputStream, t, s)
 #define	getBinaryOutputStream(t, s)	LDFUNC(getBinaryOutputStream, t, s)
+#define pushOutputContext(s)		LDFUNC(pushOutputContext, s)
+#define popOutputContext(_)		LDFUNC(popOutputContext, _)
+#define validUserStreams(_)		LDFUNC(validUserStreams, _)
 #endif /*USE_LD_MACROS*/
 
 #define LDFUNC_DECLARATIONS
@@ -62,8 +73,11 @@ typedef enum iri_op
 /* pl-file.c */
 void		initIO(void);
 void		dieIO(void);
+bool		validUserStreams(void);
 void		referenceStandardStreams(PL_local_data_t *ld);
 void		unreferenceStandardStreams(PL_local_data_t *ld);
+void		copyStandardStreams(PL_local_data_t *ldnew,
+				    PL_local_data_t *ldold, intptr_t flags);
 void		closeFiles(int all);
 int		openFileDescriptors(unsigned char *buf, int size);
 void		protocol(const char *s, size_t n);
@@ -71,8 +85,8 @@ int		getTextInputStream(term_t t, IOSTREAM **s);
 int		getBinaryInputStream(term_t t, IOSTREAM **s);
 int		getTextOutputStream(term_t t, IOSTREAM **s);
 int		getBinaryOutputStream(term_t t, IOSTREAM **s);
-int	        reportStreamError(IOSTREAM *s);
-int		streamStatus(IOSTREAM *s);
+bool		reportStreamError(IOSTREAM *s);
+bool		streamStatus(IOSTREAM *s);
 int		setFileNameStream(IOSTREAM *s, atom_t name);
 atom_t		fileNameStream(IOSTREAM *s);
 int		getSingleChar(IOSTREAM *s, int signals);
@@ -86,8 +100,8 @@ int		pl_seen(void);
 int		seeString(const char *s);
 int		seeingString(void);
 int		seenString(void);
-int		tellString(char **s, size_t *size, IOENC enc);
-int		toldString(void);
+bool		tellString(char **s, size_t *size, IOENC enc);
+bool		toldString(void);
 void		prompt1(atom_t prompt);
 atom_t		PrologPrompt(void);
 int		streamNo(term_t spec, int mode);
@@ -96,8 +110,8 @@ int		unifyTime(term_t t, time_t time);
 #ifdef __WINDOWS__
 word		pl_make_fat_filemap(term_t dir);
 #endif
-int		PL_unify_stream_or_alias(term_t t, IOSTREAM *s);
-void		pushOutputContext(void);
+bool		PL_unify_stream_or_alias(term_t t, IOSTREAM *s);
+void		pushOutputContext(IOSTREAM *s);
 void		popOutputContext(void);
 int		setupOutputRedirect(term_t to,
 				    redir_context *ctx,

@@ -38,6 +38,7 @@ check_include_file(sys/resource.h HAVE_SYS_RESOURCE_H)
 check_include_file(sys/select.h HAVE_SYS_SELECT_H)
 check_include_file(sys/stat.h HAVE_SYS_STAT_H)
 check_include_file(sys/syscall.h HAVE_SYS_SYSCALL_H)
+check_include_file(sys/ioctl.h HAVE_SYS_IOCTL_H)
 check_include_file(sys/termio.h HAVE_SYS_TERMIO_H)
 check_include_file(sys/termios.h HAVE_SYS_TERMIOS_H)
 check_include_file(sys/time.h HAVE_SYS_TIME_H)
@@ -82,6 +83,9 @@ check_library_exists(dl	dlopen	      "" HAVE_LIBDL)
 endif()
 check_library_exists(m	sin	      "" HAVE_LIBM)
 check_library_exists(rt	clock_gettime "" HAVE_LIBRT)
+if(ANDROID)
+check_library_exists(android-execinfo backtrace "" HAVE_LIBANDROID_EXECINFO)
+endif()
 
 if(HAVE_LIBDL)
   set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} dl)
@@ -100,6 +104,12 @@ if(GMP_FOUND)
   set(CMAKE_REQUIRED_INCLUDES ${CMAKE_REQUIRED_INCLUDES} ${GMP_INCLUDE_DIRS})
   set(CMAKE_EXTRA_INCLUDE_FILES ${CMAKE_EXTRA_INCLUDE_FILES} gmp.h)
 endif()
+if(HAVE_LIBANDROID_EXECINFO)
+  set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} android-execinfo)
+endif()
+if(HAVE_ZLIB_H)
+  set(CMAKE_EXTRA_INCLUDE_FILES ${CMAKE_EXTRA_INCLUDE_FILES} zlib.h)
+endif()
 
 set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
@@ -113,7 +123,8 @@ set(CMAKE_EXTRA_INCLUDE_FILES ${CMAKE_EXTRA_INCLUDE_FILES} math.h wchar.h)
 
 ################
 # Types
-
+SET(CMAKE_TRY_COMPILE_TARGET_TYPE_SAVE ${CMAKE_TRY_COMPILE_TARGET_TYPE})
+SET(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY) # Silence Win Defender
 check_type_size("int" SIZEOF_INT)
 check_type_size("long" SIZEOF_LONG)
 check_type_size("void *" SIZEOF_VOIDP)
@@ -129,6 +140,13 @@ if(USE_GMP)
     set(HAVE_MP_BITCNT_T 1)
   endif()
 endif()
+if(HAVE_ZLIB_H)
+  check_type_size("z_crc_t" SIZEOF_Z_CRC_T)
+  if(NOT SIZEOF_Z_CRC_T STREQUAL "")
+    set(HAVE_Z_CRC_T 1)
+  endif()
+endif()
+SET(CMAKE_TRY_COMPILE_TARGET_TYPE ${CMAKE_TRY_COMPILE_TARGET_TYPE_SAVE})
 
 include(AlignOf)
 alignof(ALIGNOF_INT64_T ALIGNOF_VOIDP ALIGNOF_DOUBLE)
@@ -300,7 +318,6 @@ include(TestRecursiveMutex)
 
 if(HAVE_PTHREAD_SETNAME_NP)
 function(check_pthread_setname_np)
-  set(CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS} -Werror)
   check_c_source_compiles(
       "#define _GNU_SOURCE
        #include <pthread.h>\nint main()
@@ -326,22 +343,31 @@ check_pthread_setname_np()
 endif(HAVE_PTHREAD_SETNAME_NP)
 
 check_c_source_compiles(
-    "#include <sys/types.h>
-     #include <linux/unistd.h>
+    "#define _GNU_SOURCE
+     #include <unistd.h>
      int main()
-     { _syscall0(pid_t,gettid);
-       return 0;
+     { return gettid();
      }"
-    HAVE_GETTID_MACRO)
-if(NOT HAVE_GETTID_MACRO)
+    HAVE_GETTID_FUNCTION)
+if(NOT HAVE_GETTID_FUNCTION)
   check_c_source_compiles(
-      "#include <unistd.h>
-       #include <sys/syscall.h>
+      "#include <sys/types.h>
+       #include <linux/unistd.h>
        int main()
-       { syscall(__NR_gettid);
-	 return 0;
+       { _syscall0(pid_t,gettid);
+         return 0;
        }"
-      HAVE_GETTID_SYSCALL)
+      HAVE_GETTID_MACRO)
+  if(NOT HAVE_GETTID_FUNCTION AND NOT HAVE_GETTID_MACRO)
+    check_c_source_compiles(
+	"#include <unistd.h>
+	 #include <sys/syscall.h>
+	 int main()
+	 { syscall(__NR_gettid);
+	   return 0;
+	 }"
+        HAVE_GETTID_SYSCALL)
+  endif()
 endif()
 
 endif(CMAKE_USE_PTHREADS_INIT)
@@ -400,6 +426,7 @@ if(HAVE_PTHREAD_MUTEX_RECURSIVE_NP OR HAVE_PTHREAD_MUTEX_RECURSIVE)
 endif()
 if(GMP_FOUND)
   set(O_GMP 1)
+  set(O_BIGNUM 1)
 endif()
 if(HAVE_F_SETLKW AND HAVE_FCNTL)
   set(FCNTL_LOCKS 1)
@@ -427,9 +454,13 @@ if(USE_LIBBF)
     message(FATAL "Only one of USE_GMP or USE_LIBBF may be used")
   endif()
   set(O_BF 1)
+  set(O_BIGNUM 1)
 endif()
 if(O_PLMT AND (O_SIGPROF_PROFILE OR WIN32))
   set(O_PROFILE 1)
+endif()
+if(VALIDATE_API)
+  set(O_VALIDATE_API 1)
 endif()
 
 ################

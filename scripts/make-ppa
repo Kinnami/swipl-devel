@@ -8,12 +8,14 @@
 PL_VERSION=`cat VERSION`
 VTAG=HEAD
 TARGET_DISTRO=none
-distros="bionic focal jammy kinetic"
+distros="jammy noble plucky"
 build=true
+clean=true
 buildbin=false
 push=false
 pgpkey=266FF04C52056213BECDDDA04EF5383C7C11B85B
 program="$0"
+branch=sdl
 
 usage()
 { cat << EOM
@@ -32,6 +34,8 @@ Options:
       Push the result to launchpad using dput(1)
     --key=Key [default: $pgpkey]
       Set the PGP key for signing the package
+    --no-clean
+      Do not delete build-ppa-tmp
 EOM
 exit 1
 }
@@ -65,6 +69,10 @@ while [ $done = false ]; do
 		;;
 	--build-bin)
 		buildbin=true
+		shift
+		;;
+	--no-clean)
+		clean=false
 		shift
 		;;
 	--push)
@@ -106,6 +114,12 @@ case $TARGET_DISTRO in
     fi
 esac
 
+case $TARGET_DISTRO in
+  jammy|noble)
+    branch=nox
+    shift
+esac
+
 gitd="$(git describe $VTAG)"
 GIT_SHORT_HASH=`echo $gitd | sed 's/.*-\([0-9]*-g.*\)/\1/'`
 if [ "$GIT_SHORT_HASH" = "$gitd" ]; then
@@ -115,6 +129,9 @@ fi
 VERSION=$PL_VERSION-$GIT_SHORT_HASH-${TARGET_DISTRO}ppa2
 
 echo "Building package $VERSION for $TARGET_DISTRO"
+
+echo "Checking out branch $branch"
+git -C debian checkout $branch
 
 echo " - Adding entry to changelog"
 
@@ -174,4 +191,10 @@ if [ $push = true ]; then
   ( cd build-ppa-tmp &&
     dput ppa:swi-prolog/devel swi-prolog_${VERSION}_source.changes
   )
+fi
+
+if [ $clean = true ]; then
+  echo " - Cleaning build-ppa-tmp"
+
+  rm -rf build-ppa-tmp
 fi

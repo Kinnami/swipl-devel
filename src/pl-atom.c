@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2021, University of Amsterdam
+    Copyright (c)  1985-2024, University of Amsterdam
                               VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -135,7 +135,7 @@ Atoms are reclaimed by collectAtoms(), which is a two pass process.
     - sets length to 0;
   - In the second pass, we call destroyAtom() for all atoms in
     the invalidated chain.  destroyAtom() only destroys
-    the atom if pl_atom_bucket_in_use() returns FALSE.  This serves
+    the atom if pl_atom_bucket_in_use() returns false.  This serves
     two purposes:
       - Garantee that Atom->name is valid
       - Avoid a race between looking up the atom and destroying it:
@@ -205,7 +205,7 @@ Note that threads can mark their atoms and continue execution because:
 static int	rehashAtoms(void);
 static void	considerAGC(void);
 static unsigned int register_atom(volatile Atom p);
-static unsigned int unregister_atom(volatile Atom p);
+static void	 unregister_atom(volatile Atom p);
 #ifdef O_DEBUG_ATOMGC
 static int	tracking(const Atom a);
 IOSTREAM *atomLogFd = 0;
@@ -217,16 +217,16 @@ bump_atom_references(Atom a, unsigned int ref)
   { unsigned int nref = ref+1;
 
     if ( ATOM_REF_COUNT(nref) == 0 )
-      return TRUE;			/* reached max references */
+      return true;			/* reached max references */
 
     if ( COMPARE_AND_SWAP_UINT(&a->references, ref, nref) )
     { if ( ATOM_REF_COUNT(ref) == 0 )
 	ATOMIC_DEC(&GD->atoms.unregistered);
-      return TRUE;
+      return true;
     } else
     { ref = a->references;
       if ( !ATOM_IS_VALID(ref) )
-	return FALSE;
+	return false;
     }
   }
 }
@@ -265,9 +265,9 @@ PL_register_blob_type(PL_blob_t *type)
 
 	t->next = type;
       }
-      if ( true(type, PL_BLOB_TEXT) )
+      if ( ison(type, PL_BLOB_TEXT) )
       { type->rank = ++GD->atoms.text_rank;
-	if ( true(type, PL_BLOB_WCHAR) )
+	if ( ison(type, PL_BLOB_WCHAR) )
 	  type->padding = sizeof(pl_wchar_t);
 	else
 	  type->padding = sizeof(char);
@@ -276,10 +276,10 @@ PL_register_blob_type(PL_blob_t *type)
       }
 
       if ( !GD->atoms.initialised )
-	type->registered = TRUE;
+	type->registered = true;
       if ( !type->atom_name )
 	type->atom_name = PL_new_atom(type->name);
-      type->registered = TRUE;
+      type->registered = true;
     }
 
     PL_UNLOCK(L_MISC);
@@ -303,10 +303,10 @@ PL_find_blob_type(const char *name)
 
 
 
-int
+bool
 PL_unregister_blob_type(PL_blob_t *type)
 { size_t index;
-  int i, last=FALSE;
+  int i, last=false;
   PL_blob_t **t;
   int discarded = 0;
 
@@ -328,7 +328,7 @@ PL_unregister_blob_type(PL_blob_t *type)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -348,7 +348,7 @@ PL_unregister_blob_type(PL_blob_t *type)
     }
   }
 
-  return discarded == 0 ? TRUE : FALSE;
+  return discarded == 0 ? true : false;
 }
 
 
@@ -439,7 +439,7 @@ reserveAtom(void)
 { size_t index;
 #ifdef O_ATOMGC				/* try to find a hole! */
   int i;
-  int last = FALSE;
+  int last = false;
   Atom a;
   unsigned int ref;
   int idx;
@@ -451,7 +451,7 @@ reserveAtom(void)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -514,23 +514,22 @@ PL_LOCK(L_REHASH_ATOMS) around rehashAtoms() and create   their atom. If
 they manage to register the atom in   the old table before rehashAtoms()
 activates the new table the insertion   is successful, but rehashAtoms()
 may not have moved the atom to the new   table. Now we will repeat if we
-bypassed the LOCK as either GD->atoms.rehashing is TRUE or the new table
+bypassed the LOCK as either GD->atoms.rehashing is true or the new table
 is activated.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static int
 same_name(const Atom a, const char *s, size_t length, const PL_blob_t *type)
-{ if ( false(type, PL_BLOB_NOCOPY) )
+{ if ( isoff(type, PL_BLOB_NOCOPY) )
     return length == 0 || memcmp(s, a->name, length) == 0;
   else
     return s == a->name;
 }
 
 
-word
-lookupBlob(const char *s, size_t length, PL_blob_t *type, int *new)
-{ GET_LD
-  unsigned int v0, v, ref;
+atom_t
+lookupBlob(DECL_LD const char *s, size_t length, PL_blob_t *type, int *new)
+{ unsigned int v0, v, ref;
   Atom *table;
   int buckets;
   Atom a, head;
@@ -538,7 +537,7 @@ lookupBlob(const char *s, size_t length, PL_blob_t *type, int *new)
   if ( !type->registered )		/* avoid deadlock */
     PL_register_blob_type(type);
 
-  if ( alltrue(type, PL_BLOB_UNIQUE|PL_BLOB_NOCOPY) )
+  if ( ison(type, PL_BLOB_NOCOPY) )
     v0 = MurmurHashAligned2(&s, sizeof(s), MURMUR_SEED);
   else
     v0 = MurmurHashAligned2(s, length, MURMUR_SEED);
@@ -551,7 +550,7 @@ redo:
   acquire_atom_bucket(table+v);
   DEBUG(MSG_HASH_STAT, GD->atoms.lookups++);
 
-  if ( true(type, PL_BLOB_UNIQUE) )
+  if ( ison(type, PL_BLOB_UNIQUE) )
   { for(a = table[v]; a; a = a->next)
     { DEBUG(MSG_HASH_STAT, GD->atoms.cmps++);
       ref = a->references;
@@ -571,7 +570,7 @@ redo:
           Sfprintf(atomLogFd, "Lookup `%s' at (#%" PRIuPTR ")\n",
 		   a->name, indexAtom(a->atom));
 #endif
-        *new = FALSE;
+        *new = false;
 	release_atom_table();
 	release_atom_bucket();
 	return a->atom;
@@ -596,7 +595,7 @@ redo:
   a = reserveAtom();
   a->length = length;
   a->type = type;
-  if ( false(type, PL_BLOB_NOCOPY) )
+  if ( isoff(type, PL_BLOB_NOCOPY) )
   { if ( type->padding )
     { size_t pad = type->padding;
 
@@ -617,12 +616,12 @@ redo:
   a->hash_value = v0;
 #endif
 
-  if ( true(type, PL_BLOB_UNIQUE) )
+  if ( ison(type, PL_BLOB_UNIQUE) )
   { a->next = table[v];
     if ( !( !GD->atoms.rehashing &&	/* See (**) above */
             COMPARE_AND_SWAP_PTR(&table[v], head, a) &&
 	    table == GD->atoms.table->table ) )
-    { if ( false(type, PL_BLOB_NOCOPY) )
+    { if ( isoff(type, PL_BLOB_NOCOPY) )
         PL_free(a->name);
       a->type = ATOM_TYPE_INVALID;
       a->name = "<race>";
@@ -641,7 +640,7 @@ redo:
     Sfprintf(atomLogFd, "Created `%s' at (#%" PRIuPTR "d)\n",
 	     a->name, indexAtom(a->atom));
 #endif
-  *new = TRUE;
+  *new = true;
   if ( type->acquire )
     (*type->acquire)(a->atom);
 
@@ -655,8 +654,8 @@ redo:
 }
 
 
-word
-lookupAtom(const char *s, size_t length)
+atom_t
+lookupAtom(DECL_LD const char *s, size_t length)
 { int new;
 
   return lookupBlob(s, length, &text_atom, &new);
@@ -707,19 +706,21 @@ _PL_debug_unregister_atom(atom_t a,
   assert(i>=0 && i<mx);
   if ( i >= GD->atoms.builtin )
   { Atom atom = fetchAtomArray(i);
-    unsigned int refs;
 
-    refs = unregister_atom(atom);
+    unregister_atom(atom);
     if ( atomLogFd && tracking(atom) )
       Sfprintf(atomLogFd, "%s:%d: %s(): -- (%d) for `%s' (#%zd)\n",
-	       file, line, func, refs, atom->name, i);
+	       file, line, func, ATOM_REF_COUNT(atom->references),
+	       atom->name, i);
   }
 }
 
-
-word
-pl_track_atom(term_t which, term_t stream)
-{ char *s;
+static
+PRED_IMPL("track_atom", 2, track_atom, 0)
+{ PRED_LD
+  char *s;
+  term_t which = A1;
+  term_t stream = A2;
 
   if ( t_tracking )
     remove_string(t_tracking);
@@ -731,7 +732,7 @@ pl_track_atom(term_t which, term_t stream)
 
   if ( !PL_get_chars(which, &s, CVT_LIST|CVT_STRING|CVT_EXCEPTION) ||
        !PL_get_stream_handle(stream, &atomLogFd) )
-    return FALSE;
+    return false;
 
   PL_release_stream(atomLogFd);
 
@@ -783,7 +784,7 @@ markAtom(atom_t a)
 static void
 unmarkAtoms(void)
 { size_t index;
-  int i, last=FALSE;
+  int i, last=false;
 
   for(index=GD->atoms.builtin, i=MSB(index); !last; i++)
   { size_t upto = (size_t)2<<i;
@@ -792,7 +793,7 @@ unmarkAtoms(void)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -834,22 +835,19 @@ static int
 invalidateAtom(Atom a, unsigned int ref)
 { Atom *ap;
 
-#define ATOM_PRE_DESTROY_REFERENCE \
-	(ATOM_DESTROY_REFERENCE|ATOM_RESERVED_REFERENCE)
-
   if ( !COMPARE_AND_SWAP_UINT(&a->references, ref, ATOM_PRE_DESTROY_REFERENCE) )
-  { return FALSE;
+  { return false;
   }
 
   if ( a->type->release )
-  { if ( !(*a->type->release)(a->atom) )
+  { if ( a->name && !(*a->type->release)(a->atom) )
     { COMPARE_AND_SWAP_UINT(&a->references, ATOM_PRE_DESTROY_REFERENCE, ref);
-      return FALSE;
+      return false;
     }
   } else if ( GD->atoms.gc_hook )
   { if ( !(*GD->atoms.gc_hook)(a->atom) )
     { COMPARE_AND_SWAP_UINT(&a->references, ATOM_PRE_DESTROY_REFERENCE, ref);
-      return FALSE;				/* foreign hooks says `no' */
+      return false;				/* foreign hooks says `no' */
     }
   }
 
@@ -860,7 +858,7 @@ invalidateAtom(Atom a, unsigned int ref)
     Sfprintf(atomLogFd, "Invalidated `%s'\n", a->name);
 #endif
 
-  if ( true(a->type, PL_BLOB_UNIQUE) )
+  if ( ison(a->type, PL_BLOB_UNIQUE) )
   { AtomTable table;
     uintptr_t mask;
 
@@ -886,7 +884,7 @@ invalidateAtom(Atom a, unsigned int ref)
     }
   }
 
-  if ( false(a->type, PL_BLOB_NOCOPY) )
+  if ( isoff(a->type, PL_BLOB_NOCOPY) )
   { size_t slen = a->length + a->type->padding;
     ATOMIC_SUB(&GD->statistics.atom_string_space, slen);
     ATOMIC_ADD(&GD->statistics.atom_string_space_freed, slen);
@@ -897,7 +895,7 @@ invalidateAtom(Atom a, unsigned int ref)
   invalid_atoms = a;
   a->length = 0;
 
-  return TRUE;
+  return true;
 }
 
 static int
@@ -911,7 +909,7 @@ destroyAtom(Atom a, Atom **buckets)
     while ( t )
     { v = a->hash_value & (t->buckets-1);
       if ( *buckets == t->table+v )
-      { return FALSE;
+      { return false;
       }
       t = t->prev;
     }
@@ -919,7 +917,7 @@ destroyAtom(Atom a, Atom **buckets)
   }
 
 #ifdef O_DEBUG_ATOMGC
-  /* tracking() always returns FALSE as the type is lost */
+  /* tracking() always returns false as the type is lost */
   if ( atomLogFd && tracking(a) )
     Sfprintf(atomLogFd, "Deleted `%s'\n", a->name);
 #endif
@@ -937,7 +935,7 @@ destroyAtom(Atom a, Atom **buckets)
   if ( GD->atoms.no_hole_before > index )
     GD->atoms.no_hole_before = index;
 
-  return TRUE;
+  return true;
 }
 
 
@@ -946,7 +944,7 @@ collectAtoms(void)
 { size_t reclaimed = 0;
   size_t unregistered = 0;
   size_t index;
-  int i, last=FALSE;
+  int i, last=false;
   Atom temp, next, prev = NULL;	 /* = NULL to keep compiler happy */
 
   for(index=GD->atoms.builtin, i=MSB(index); !last; i++)
@@ -956,7 +954,7 @@ collectAtoms(void)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -1025,24 +1023,24 @@ pl_garbage_collect_atoms(void)
   double t;
   sigset_t set;
   size_t reclaimed;
-  int rc = TRUE;
+  int rc = true;
 
   if ( GD->cleaning != CLN_NORMAL )	/* Cleaning up */
-    return TRUE;
+    return true;
 
-  if ( !COMPARE_AND_SWAP_INT(&GD->atoms.gc_active, FALSE, TRUE) )
-    return TRUE;
+  if ( !COMPARE_AND_SWAP_INT(&GD->atoms.gc_active, false, true) )
+    return true;
 
   if ( verbose )
   { if ( !printMessage(ATOM_informational,
 		       PL_FUNCTOR_CHARS, "agc", 1,
 			 PL_CHARS, "start") )
-    { GD->atoms.gc_active = FALSE;
-      return FALSE;
+    { GD->atoms.gc_active = false;
+      return false;
     }
   }
 
-  LD->atoms.gc_active = TRUE;
+  LD->atoms.gc_active = true;
   PL_LOCK(L_REHASH_ATOMS);
   blockSignals(&set);
   t = CpuTime(CPU_USER);
@@ -1061,7 +1059,7 @@ pl_garbage_collect_atoms(void)
   GD->atoms.gc++;
   unblockSignals(&set);
   PL_UNLOCK(L_REHASH_ATOMS);
-  LD->atoms.gc_active = FALSE;
+  LD->atoms.gc_active = false;
 
   if ( verbose )
     rc = printMessage(ATOM_informational,
@@ -1071,7 +1069,7 @@ pl_garbage_collect_atoms(void)
 			  PL_INT, GD->statistics.atoms,
 			  PL_DOUBLE, (double)t);
 
-  GD->atoms.gc_active = FALSE;
+  GD->atoms.gc_active = false;
 
   return rc;
 }
@@ -1196,25 +1194,22 @@ collection afterwards.  So, basically we must do something like this:
   }
 
 But, this fails because AGC might kick in between agc_running was tested
-FALSE the atomic decrement. This is  fixed   by  putting the atom we are
+false the atomic decrement. This is  fixed   by  putting the atom we are
 unregistering  in  LD->atoms.unregistered  and  mark    this  atom  from
 markAtomsOnStacks().
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-static unsigned int
+static void
 unregister_atom(volatile Atom p)
-{ unsigned int refs;
+{ unsigned int newref;
 
-  if ( !ATOM_IS_VALID(p->references) )
+  if ( unlikely(!ATOM_IS_VALID(p->references)) )
   { Sdprintf("OOPS: PL_unregister_atom('%s'): invalid atom\n", p->name);
     trap_gdb();
   }
 
-  if ( unlikely(ATOM_REF_COUNT(p->references+1) == 0) )
-    return ATOM_REF_COUNT(~(unsigned int)0);
-
-  if ( GD->atoms.gc_active )
-  { unsigned int oldref, newref;
+  if ( unlikely(GD->atoms.gc_active) )
+  { unsigned int oldref;
 
     do
     { oldref = p->references;
@@ -1223,28 +1218,35 @@ unregister_atom(volatile Atom p)
       if ( ATOM_REF_COUNT(newref) == 0 )
 	newref |= ATOM_MARKED_REFERENCE;
     } while( !COMPARE_AND_SWAP_UINT(&p->references, oldref, newref) );
-    refs = ATOM_REF_COUNT(newref);
 #ifdef O_DEBUG_ATOMGC
-    if ( refs == 0 && atomLogFd && tracking(p) )
+    if ( ATOM_REF_COUNT(newref) == 0 && atomLogFd && tracking(p) )
       Sfprintf(atomLogFd, "Marked '%s' at (#%" PRIuPTR ") (unregistered)\n",
 	       p->name, indexAtom(p->atom));
 #endif
-  } else
-  { GET_LD
+  } else			/* no AGC in progress */
+  { unsigned int oldref;
 
-    if ( HAS_LD )
-    { LD->atoms.unregistering = p->atom;
 #ifdef O_DEBUG_ATOMGC
     if ( atomLogFd && tracking(p) )
       Sfprintf(atomLogFd, "Set atoms.unregistering for '%s' at (#%" PRIuPTR ")\n",
 	       p->name, indexAtom(p->atom));
 #endif
-    }
-    if ( (refs=ATOM_REF_COUNT(ATOMIC_DEC(&p->references))) == 0 )
-      ATOMIC_INC(&GD->atoms.unregistered);
+
+    do
+    { oldref = p->references;
+      newref = oldref - 1;
+
+      if ( ATOM_REF_COUNT(newref) == 0 )
+      { GET_LD
+
+        if ( HAS_LD )
+	  LD->atoms.unregistering = p->atom;
+	ATOMIC_INC(&GD->atoms.unregistered);
+      }
+    } while( !COMPARE_AND_SWAP_UINT(&p->references, oldref, newref) );
   }
 
-  if ( refs == ATOM_REF_COUNT((unsigned int)-1) )
+  if ( unlikely(ATOM_REF_COUNT(newref) == ATOM_REF_COUNT((unsigned int)-1)) )
   { char fmt[100];
     char *enc;
     char *buf = NULL;
@@ -1257,8 +1259,6 @@ unregister_atom(volatile Atom p)
       PL_free(buf);
     trap_gdb();
   }
-
-  return refs;
 }
 
 
@@ -1278,7 +1278,7 @@ void
 }
 
 
-/* TRUE if `a` is a possible candidate for AGC
+/* true if `a` is a possible candidate for AGC
 */
 int
 is_volatile_atom(atom_t a)
@@ -1291,7 +1291,7 @@ is_volatile_atom(atom_t a)
     return !p->references;
   }
 #endif
-  return FALSE;
+  return false;
 }
 
 
@@ -1303,7 +1303,10 @@ is_volatile_atom(atom_t a)
 
 static int
 findAtomSelf(Atom a)
-{ GET_LD
+{
+#if O_PLMT
+  GET_LD
+#endif
   Atom *table;
   int buckets;
   Atom head, ap;
@@ -1319,21 +1322,21 @@ redo:
   { if ( ap == a )
     { release_atom_table();
       release_atom_bucket();
-      return TRUE;
+      return true;
     }
   }
 
   if ( !( table == GD->atoms.table->table && head == table[v] ) )
     goto redo;
 
-  return FALSE;
+  return false;
 }
 
 
 int
 checkAtoms_src(const char *file, int line)
 { size_t index;
-  int i, last=FALSE;
+  int i, last=false;
   int errors = 0;
 
   for(index=1, i=0; !last; i++)
@@ -1343,7 +1346,7 @@ checkAtoms_src(const char *file, int line)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -1359,7 +1362,7 @@ checkAtoms_src(const char *file, int line)
 	  trap_gdb();
 	}
 
-	if ( true(a->type, PL_BLOB_UNIQUE) )
+	if ( ison(a->type, PL_BLOB_UNIQUE) )
 	{ if ( !findAtomSelf(a) )
 	  { Sdprintf("%s%d: cannot find self: %p\n", file, line, a);
 	  }
@@ -1383,21 +1386,21 @@ rehashAtoms(void)
 { AtomTable newtab;
   uintptr_t mask;
   size_t index;
-  int i, last=FALSE;
+  int i, last=false;
 
   if ( GD->cleaning != CLN_NORMAL )
-    return TRUE;			/* no point anymore and foreign ->type */
+    return true;			/* no point anymore and foreign ->type */
 					/* pointers may have gone */
 
   if ( GD->atoms.table->buckets * 2 >= GD->statistics.atoms )
-    return TRUE;
+    return true;
 
   if ( !(newtab = allocHeap(sizeof(*newtab))) )
-    return FALSE;
+    return false;
   newtab->buckets = GD->atoms.table->buckets * 2;
   if ( !(newtab->table = allocHeapOrHalt(newtab->buckets * sizeof(Atom))) )
   { freeHeap(newtab, sizeof(*newtab));
-    return FALSE;
+    return false;
   }
   memset(newtab->table, 0, newtab->buckets * sizeof(Atom));
   newtab->prev = GD->atoms.table;
@@ -1407,7 +1410,7 @@ rehashAtoms(void)
 	Sdprintf("rehashing atoms (%d --> %d)\n",
 		 GD->atoms.table->buckets, newtab->buckets));
 
-  GD->atoms.rehashing = TRUE;
+  GD->atoms.rehashing = true;
 
   for(index=1, i=0; !last; i++)
   { size_t upto = (size_t)2<<i;
@@ -1416,7 +1419,7 @@ rehashAtoms(void)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -1427,7 +1430,7 @@ redo:
       if ( ATOM_IS_RESERVED(ref) )
       { if ( !ATOM_IS_VALID(ref) )
 	  goto redo;
-	if ( true(a->type, PL_BLOB_UNIQUE) )
+	if ( ison(a->type, PL_BLOB_UNIQUE) )
 	{ size_t v;
 	  v = a->hash_value & mask;
 	  a->next = newtab->table[v];
@@ -1438,13 +1441,13 @@ redo:
   }
 
   GD->atoms.table = newtab;
-  GD->atoms.rehashing = FALSE;
+  GD->atoms.rehashing = false;
 
-  return TRUE;
+  return true;
 }
 
 
-word
+foreign_t
 pl_atom_hashstat(term_t idx, term_t n)
 { GET_LD
   long i, m;
@@ -1507,7 +1510,7 @@ resetListAtoms(void)
   a = atomValue(ATOM_nil);
   a->type = &text_atom;
 
-  return TRUE;
+  return true;
 }
 
 
@@ -1599,7 +1602,7 @@ do_init_atoms(void)
 #ifdef O_RESERVED_SYMBOLS
     initReservedSymbols();
 #endif
-    GD->atoms.initialised = TRUE;
+    GD->atoms.initialised = true;
   }
   PL_UNLOCK(L_INIT_ATOMS);
 }
@@ -1615,7 +1618,7 @@ void
 cleanupAtoms(void)
 { AtomTable table;
   size_t index;
-  int i, last=FALSE;
+  int i, last=false;
 
   for(index=GD->atoms.builtin, i=MSB(index); !last; i++)
   { size_t upto = (size_t)2<<i;
@@ -1624,7 +1627,7 @@ cleanupAtoms(void)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -1634,12 +1637,12 @@ cleanupAtoms(void)
       if ( !ATOM_IS_VALID(ref) )
         continue;
 
-      if ( a->type->release )
+      if ( a->name && a->type->release )
         (*a->type->release)(a->atom);
       else if ( GD->atoms.gc_hook )
         (*GD->atoms.gc_hook)(a->atom);
 
-      if ( false(a->type, PL_BLOB_NOCOPY) )
+      if ( isoff(a->type, PL_BLOB_NOCOPY) )
         PL_free(a->name);
     }
   }
@@ -1676,7 +1679,7 @@ cleanupAtoms(void)
   { bn = t->next;
 
     t->next       = NULL;
-    t->registered = FALSE;
+    t->registered = false;
     t->rank       = 0;
     t->atom_name  = (atom_t)0;
   }
@@ -1685,7 +1688,7 @@ cleanupAtoms(void)
 
 
 #define current_blob(a, type, call, state) LDFUNC(current_blob, a, type, call, state)
-static word
+static atom_t
 current_blob(DECL_LD term_t a, term_t type, frg_code call, intptr_t state)
 { atom_t type_name = 0;
   size_t index;
@@ -1698,13 +1701,13 @@ current_blob(DECL_LD term_t a, term_t type, frg_code call, intptr_t state)
       if ( PL_is_blob(a, &bt) )
       { if ( type )
 	  return PL_unify_atom(type, bt->atom_name);
-	else if ( false(bt, PL_BLOB_TEXT) )
-	  return FALSE;
+	else if ( isoff(bt, PL_BLOB_TEXT) )
+	  return false;
 
 	succeed;
       }
       if ( !PL_is_variable(a) )
-	return FALSE;
+	return false;
 
       index = 1;
       break;
@@ -1714,13 +1717,13 @@ current_blob(DECL_LD term_t a, term_t type, frg_code call, intptr_t state)
       break;
     case FRG_CUTTED:
     default:
-      return TRUE;
+      return true;
   }
 
   if ( type )
   { if ( !PL_is_variable(type) &&
 	 !PL_get_atom_ex(type, &type_name) )
-      return FALSE;
+      return false;
   }
 
   for(i=MSB(index); !last; i++)
@@ -1730,7 +1733,7 @@ current_blob(DECL_LD term_t a, term_t type, frg_code call, intptr_t state)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -1754,10 +1757,10 @@ current_blob(DECL_LD term_t a, term_t type, frg_code call, intptr_t state)
 	{ if ( !type_name )
 	  { if ( !PL_unify_atom(type, btype->atom_name) )
 	    { PL_unregister_atom(atom->atom);
-	      return FALSE;
+	      return false;
 	    }
 	  }
-	} else if ( false(btype, PL_BLOB_TEXT) )
+	} else if ( isoff(btype, PL_BLOB_TEXT) )
 	{ PL_unregister_atom(atom->atom);
 	  continue;
 	}
@@ -1772,7 +1775,7 @@ current_blob(DECL_LD term_t a, term_t type, frg_code call, intptr_t state)
     }
   }
 
-  return FALSE;
+  return false;
 }
 
 
@@ -1805,7 +1808,7 @@ PRED_IMPL("blob", 2, blob, 0)
   if ( PL_is_blob(A1, &bt) )
     return PL_unify_atom(A2, bt->atom_name);
 
-  return FALSE;
+  return false;
 }
 
 
@@ -1850,7 +1853,7 @@ global_atom(Atom a)
 static int
 is_identifier_text(PL_chars_t *txt)
 { if ( txt->length == 0 )
-    return FALSE;
+    return false;
 
   switch(txt->encoding)
   { case ENC_ISO_LATIN_1:
@@ -1858,30 +1861,30 @@ is_identifier_text(PL_chars_t *txt)
       const unsigned char *e = &s[txt->length];
 
       if ( !f_is_prolog_atom_start(*s) )
-	return FALSE;
+	return false;
 
       for(s++; s<e; s++)
       { if ( !f_is_prolog_identifier_continue(*s) )
-	  return FALSE;
+	  return false;
       }
-      return TRUE;
+      return true;
     }
     case ENC_WCHAR:
     { const pl_wchar_t *s = (const pl_wchar_t*)txt->text.w;
       const pl_wchar_t *e = &s[txt->length];
 
       if ( !f_is_prolog_atom_start(*s) )
-	return FALSE;
+	return false;
 
       for(s++; s<e; s++)
       { if ( !f_is_prolog_identifier_continue(*s) )
-	  return FALSE;
+	  return false;
       }
-      return TRUE;
+      return true;
     }
     default:
       assert(0);
-      return FALSE;
+      return false;
   }
 }
 
@@ -1889,11 +1892,11 @@ is_identifier_text(PL_chars_t *txt)
 static int
 extendAtom(char *prefix, bool *unique, char *common)
 { size_t index;
-  int i, last=FALSE;
-  bool first = TRUE;
+  int i, last=false;
+  bool first = true;
   size_t lp = strlen(prefix);
 
-  *unique = TRUE;
+  *unique = true;
 
   for(index=1, i=0; !last; i++)
   { size_t upto = (size_t)2<<i;
@@ -1902,7 +1905,7 @@ extendAtom(char *prefix, bool *unique, char *common)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -1912,16 +1915,16 @@ extendAtom(char *prefix, bool *unique, char *common)
 	   global_atom(a) &&
 	   strprefix(a->name, prefix) &&
 	   strlen(a->name) < LINESIZ )
-      { if ( first == TRUE )
+      { if ( first == true )
 	{ strcpy(common, a->name+lp);
-	  first = FALSE;
+	  first = false;
 	} else
 	{ char *s = common;
 	  char *q = a->name+lp;
 	  while( *s && *s == *q )
 	    s++, q++;
 	  *s = EOS;
-	  *unique = FALSE;
+	  *unique = false;
 	}
       }
     }
@@ -1959,7 +1962,7 @@ PRED_IMPL("$complete_atom", 3, complete_atom, 0)
 
   if ( !PL_get_nchars(prefix, &len, &p, CVT_ALL|CVT_EXCEPTION) ||
        len >= sizeof(buf) )
-    return FALSE;
+    return false;
   strcpy(buf, p);
 
   if ( extendAtom(p, &u, cmm) )
@@ -1967,10 +1970,10 @@ PRED_IMPL("$complete_atom", 3, complete_atom, 0)
     if ( PL_unify_list_codes(common, buf) &&
 	 PL_unify_atom(unique, u ? ATOM_unique
 				 : ATOM_not_unique) )
-      return TRUE;
+      return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 
@@ -1983,7 +1986,7 @@ compareMatch(const void *m1, const void *m2)
 static int
 extend_alternatives(PL_chars_t *prefix, struct match *altv, int *altn)
 { size_t index;
-  int i, last=FALSE;
+  int i, last=false;
 
   *altn = 0;
   for(index=1, i=0; !last; i++)
@@ -1993,7 +1996,7 @@ extend_alternatives(PL_chars_t *prefix, struct match *altv, int *altn)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -2001,7 +2004,7 @@ extend_alternatives(PL_chars_t *prefix, struct match *altv, int *altn)
       PL_chars_t hit;
 
       if ( index % 256 == 0 && PL_handle_signals() < 0 )
-	return FALSE;			/* interrupted */
+	return false;			/* interrupted */
 
       if ( ATOM_IS_VALID(a->references) &&
 	   global_atom(a) &&
@@ -2022,7 +2025,7 @@ extend_alternatives(PL_chars_t *prefix, struct match *altv, int *altn)
 out:
   qsort(altv, *altn, sizeof(struct match), compareMatch);
 
-  return TRUE;
+  return true;
 }
 
 
@@ -2051,15 +2054,15 @@ PRED_IMPL("$atom_completions", 2, atom_completions, 0)
   term_t head = PL_new_term_ref();
 
   if ( !PL_get_text(prefix, &p_text, CVT_ALL|CVT_EXCEPTION) )
-    return FALSE;
+    return false;
 
   if ( !extend_alternatives(&p_text, altv, &altn) )
-    return FALSE;			/* interrupt */
+    return false;			/* interrupt */
 
   for(i=0; i<altn; i++)
   { if ( !PL_unify_list(alts, head, alts) ||
 	 !PL_unify_atom(head, altv[i].name->atom) )
-      return FALSE;
+      return false;
   }
 
   return PL_unify_nil(alts);
@@ -2093,7 +2096,7 @@ static int
 atom_generator(PL_chars_t *prefix, PL_chars_t *hit, int state)
 { GET_LD
   size_t index;
-  int i, last=FALSE;
+  int i, last=false;
 
 #ifdef O_PLMT
   if ( !LD )
@@ -2120,7 +2123,7 @@ atom_generator(PL_chars_t *prefix, PL_chars_t *hit, int state)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -2128,7 +2131,7 @@ atom_generator(PL_chars_t *prefix, PL_chars_t *hit, int state)
 
       if ( is_signalled() )	/* Notably allow windows version */
       { if ( PL_handle_signals() < 0 )	/* to break out on ^C */
-	  return FALSE;
+	  return false;
       }
 
       if ( ATOM_IS_VALID(a->references) && global_atom(a) &&
@@ -2145,12 +2148,12 @@ atom_generator(PL_chars_t *prefix, PL_chars_t *hit, int state)
 	  atom_genetor_state = index;
 #endif
 
-        return TRUE;
+        return true;
       }
     }
   }
 
-  return FALSE;
+  return false;
 }
 
 
@@ -2166,7 +2169,7 @@ PL_atom_generator(const char *prefix, int state)
   while ( atom_generator(&txt, &hit, state) )
   { if ( hit.encoding == ENC_ISO_LATIN_1 )
       return hit.text.t;		/* text is from atoms, thus static */
-    state = TRUE;
+    state = true;
   }
 
   return NULL;
@@ -2185,7 +2188,7 @@ PL_atom_generator_w(const pl_wchar_t *prefix,
   txt.encoding = ENC_WCHAR;
   txt.length   = wcslen(prefix);
 
-  for( ; atom_generator(&txt, &hit, state); state = TRUE )
+  for( ; atom_generator(&txt, &hit, state); state = true )
   { if ( buflen > hit.length+1 )
     { if ( hit.encoding == ENC_WCHAR )
       { wcscpy(buffer, hit.text.w);
@@ -2211,7 +2214,7 @@ size_t
 atom_space(void)
 { size_t array = ((size_t)2<<MSB(GD->atoms.highest))*sizeof(struct atom);
   size_t index;
-  int i, last=FALSE;
+  int i, last=false;
   size_t table = GD->atoms.table->buckets * sizeof(Atom);
   size_t data = 0;
 
@@ -2222,7 +2225,7 @@ atom_space(void)
 
     if ( upto >= high )
     { upto = high;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -2249,4 +2252,7 @@ BeginPredDefs(atom)
   PRED_DEF("$atom_references", 2, atom_references, 0)
   PRED_DEF("$atom_completions", 2, atom_completions, 0)
   PRED_DEF("$complete_atom", 3, complete_atom, 0)
+#ifdef O_DEBUG_ATOMGC
+  PRED_DEF("$track_atom", 2, track_atom, 0)
+#endif
 EndPredDefs

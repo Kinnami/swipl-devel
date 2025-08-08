@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2020, University of Amsterdam
+    Copyright (c)  2011-2024, University of Amsterdam
 			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -42,8 +43,8 @@ growBuffer(Buffer b, size_t minfree)
   size_t top = b->top - b->base;
   char *new;
 
-  if ( b->top + minfree <= b->max )
-    return TRUE;
+  if ( b->max - b->top >= minfree )
+    return true;
 
   if ( sz < 512 )
     sz = 512;				/* minimum reasonable size */
@@ -53,20 +54,20 @@ growBuffer(Buffer b, size_t minfree)
   if ( b->base == b->static_buffer )
   { sz = tmp_nalloc(sz);
     if ( !(new = tmp_malloc(sz)) )
-      return FALSE;
+      return false;
 
     memcpy(new, b->static_buffer, osz);
   } else
   { sz = tmp_nrealloc(b->base, sz);
     if ( !(new = tmp_realloc(b->base, sz)) )
-      return FALSE;
+      return false;
   }
 
   b->base = new;
   b->top = b->base + top;
   b->max = b->base + sz;
 
-  return TRUE;
+  return true;
 }
 
 
@@ -157,7 +158,7 @@ popStringBuffer(string_stack *stack)
   if ( __builtin_popcount(stack->top) == 1 && stack->top > 4 )
   { unsigned int i;
     unsigned int k = MSB(stack->allocated);
-    string_buffer *ptr = stack->buffers[k]+(1<<k);
+    string_buffer *ptr = &stack->buffers[k][1<<k];
 
     DEBUG(MSG_STRING_BUFFER,
 	  Sdprintf("Discarding string buffers %d..%d\n",
@@ -179,8 +180,9 @@ popStringBuffer(string_stack *stack)
     stack->allocated = --stack->top;
   } else
   { unsigned int i = stack->top--;
+    size_t discard = i>16 ? 0 : BUFFER_DISCARD_ABOVE>>i; /* discard higher buffers earlier */
     string_buffer *b = &stack->buffers[MSB(i)][i];
-    emptyBuffer(&b->buf, BUFFER_DISCARD_ABOVE>>i);
+    emptyBuffer(&b->buf, discard);
   }
 
   return stack->top;
@@ -254,10 +256,10 @@ unfindBuffer(Buffer b, int flags)
     else
       Sdprintf("OOPS: unfindBuffer(): not top buffer\n");
 
-    return TRUE;
+    return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 

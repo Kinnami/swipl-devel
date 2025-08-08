@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2018-2022, CWI Amsterdam
+    Copyright (c)  2018-2024, CWI Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
@@ -36,12 +36,14 @@
 :- module(prolog_help,
 	  [ help/0,
 	    help/1,                     % +Object
-	    apropos/1                   % +Search
+	    apropos/1,                  % +Search
+	    help_text/2
 	  ]).
 :- use_module(library(pldoc), []).
+:- use_module(library(isub), [isub/4]).
+
 :- autoload(library(apply), [maplist/3]).
 :- autoload(library(error), [must_be/2]).
-:- autoload(library(isub), [isub/4]).
 :- autoload(library(lists), [append/3, sum_list/2]).
 :- autoload(library(pairs), [pairs_values/2]).
 :- autoload(library(porter_stem), [tokenize_atom/2]).
@@ -51,7 +53,7 @@
 :- autoload(library(http/html_write), [html/3, print_html/1]).
 :- autoload(library(lynx/html_text), [html_text/2]).
 :- autoload(pldoc(doc_man), [man_page/4]).
-:- autoload(pldoc(doc_modes), [mode/2]).
+:- autoload(pldoc(doc_modes), [(mode)/2]).
 :- autoload(pldoc(doc_words), [doc_related_word/3]).
 :- autoload(pldoc(man_index), [man_object_property/2, doc_object_identifier/2]).
 :- autoload(library(prolog_code), [pi_head/2]).
@@ -114,12 +116,23 @@ By default the result of  help/1  is   sent  through  a  _pager_ such as
 %       be unbound.
 %     - Name//Arity
 %       Give help on the matching DCG rule (non-terminal)
+%     - Module:Name
+%       Give help on predicates with Name in Module and any arity.
+%       Used for loaded code only.
+%     - Module:Name/Arity
+%       Give help on predicates with Name in Module and Arity.
+%       Used for loaded code only.
 %     - f(Name/Arity)
 %       Give help on the matching Prolog arithmetic functions.
 %     - c(Name)
 %       Give help on the matching C interface function
 %     - section(Label)
 %       Show the section from the manual with matching Label.
+%
+%   help/1 shows documentation from the manual   as  well as from loaded
+%   user code if the code is documented   using  PlDoc. To show only the
+%   documentatoion of the  loaded  predicate   we  may  prefix predicate
+%   indicator with the module in which it is defined.
 %
 %   If an exact match fails this predicates attempts fuzzy matching and,
 %   when successful, display the results headed   by  a warning that the
@@ -175,7 +188,8 @@ help_html(Matches, How, HTML) :-
 					      links(false),
 					      link_source(false),
 					      navtree(false),
-					      server(false)
+					      server(false),
+                                              qualified(always)
 					    ]))
 			    ])
 		     ])),
@@ -195,7 +209,12 @@ match_type(dwim-For) -->
 man_pages([], _) -->
     [].
 man_pages([H|T], Options) -->
-    man_page(H, Options),
+    (   man_page(H, Options)
+    ->  []
+    ;   html(p(class(warning),
+               [ 'WARNING: No help for ~p'-[H]
+               ]))
+    ),
     man_pages(T, Options).
 
 page_width(Width) :-
@@ -265,19 +284,25 @@ help_object(Func, How, c(Name), ID) :-
     match_name(How, Fuzzy, Name),
     man_object_property(c(Name), id(ID)).
 % for currently loaded predicates
-help_object(Module, _How, Name/Arity, _ID) :-
+help_object(Module, _How, Module:Name/Arity, _ID) :-
     atom(Module),
     current_module(Module),
     atom_concat('sec:', Module, SecLabel),
     \+ man_object_property(section(_,_,SecLabel,_), _), % not a section
     current_predicate_help(Module:Name/Arity).
-help_object(Name/Arity, _How, Name/Arity, _ID) :-
+help_object(Module:Name, _How, Module:Name/Arity, _ID) :-
     atom(Name),
-    current_predicate_help(_:Name/Arity).
-help_object(Fuzzy, How, Name/Arity, _ID) :-
+    current_predicate_help(Module:Name/Arity).
+help_object(Module:Name/Arity, _How, Module:Name/Arity, _ID) :-
+    atom(Name),
+    current_predicate_help(Module:Name/Arity).
+help_object(Name/Arity, _How, Module:Name/Arity, _ID) :-
+    atom(Name),
+    current_predicate_help(Module:Name/Arity).
+help_object(Fuzzy, How, Module:Name/Arity, _ID) :-
     atom(Fuzzy),
     match_name(How, Fuzzy, Name),
-    current_predicate_help(_:Name/Arity).
+    current_predicate_help(Module:Name/Arity).
 
 %!  current_predicate_help(?PI) is nondet.
 %
@@ -290,11 +315,11 @@ current_predicate_help(M:Name/Arity) :-
     current_predicate(M:Name/Arity),
     pi_head(Name/Arity,Head),
     \+ predicate_property(M:Head, imported_from(_)),
-    \+ man_object_property(Name/Arity, _), % must not be indexed already
+    module_property(M, class(user)),
     (   mode(M:_, _)             % Some predicates are documented
     ->  true
     ;   \+ module_property(M, class(system)),
-	predicate_property(M:Head,file(File)),
+        main_source_file(M:Head, File),
 	xref_source(File,[comments(store)])
     ),
     mode(M:Head, _).             % Test that our predicate is documented
@@ -302,6 +327,22 @@ current_predicate_help(M:Name/Arity) :-
 match_name(exact, Name, Name).
 match_name(dwim,  Name, Fuzzy) :-
     freeze(Fuzzy, dwim_match(Fuzzy, Name)).
+
+%!  main_source_file(+Pred, -File) is semidet.
+%
+%   True when File is the main (not included) file that defines Pred.
+
+main_source_file(Pred, File) :-
+    predicate_property(Pred, file(File0)),
+    main_source(File0, File).
+
+main_source(File, Main) :-
+    source_file(File),
+    !,
+    Main = File.
+main_source(File, Main) :-
+    source_file_property(File, included_in(Parent, _Time)),
+    main_source(Parent, Main).
 
 
 %!  with_pager(+Goal)
@@ -501,6 +542,18 @@ object_class(_M:_Name/_Arity, library_predicate).
 object_class(_Name//_Arity, dcg).
 object_class(_M:_Name//_Arity, dcg).
 
+%! help_text(+Predicate:term, -HelpText:string) is semidet.
+%
+%  When =Predicate= is a term of the form =Name/Arity= for which
+%  documentation exists, =HelpText= is the documentation in textual
+%  format (parsed from the HTML help).
+help_text(Pred, HelpText) :-
+    help_objects(Pred, exact, Matches), !,
+    catch(help_html(Matches, exact-exact, HtmlDoc), _, fail),
+    setup_call_cleanup(open_string(HtmlDoc, In),
+                       load_html(stream(In), Dom, []),
+                       close(In)),
+    with_output_to(string(HelpText), html_text(Dom, [])).
 
 		 /*******************************
 		 *            MESSAGES		*

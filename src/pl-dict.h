@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2013-2021, VU University Amsterdam
+    Copyright (c)  2013-2024, VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -37,13 +37,12 @@
 #ifndef PL_DICT_H_INCLUDED
 #define PL_DICT_H_INCLUDED
 
-#define DICT_SORTED	0x1		/* Sort dict entries */
-
 #if USE_LD_MACROS
+#define PL_is_dict(t)				LDFUNC(PL_is_dict, t)
 #define	pl_for_dict(dict, func, closure, flags)	LDFUNC(pl_for_dict, dict, func, closure, flags)
 #define	dict_order(dict, dupl)			LDFUNC(dict_order, dict, dupl)
 #define	dict_order_term_refs(av, indexes, cnt)	LDFUNC(dict_order_term_refs, av, indexes, cnt)
-#define	dict_lookup_ptr(dict, name)		LDFUNC(dict_lookup_ptr, dict, name)
+#define	dict_lookup_ptr(dict, name, arg)	LDFUNC(dict_lookup_ptr, dict, name, arg)
 #endif /*USE_LD_MACROS*/
 
 #define LDFUNC_DECLARATIONS
@@ -60,13 +59,14 @@ int	pl_for_dict(term_t dict,
 functor_t dict_functor(int pairs);
 int	  dict_order(Word dict, Word dupl);
 int	  dict_order_term_refs(term_t *av, int *indexes, int cnt);
-Word	  dict_lookup_ptr(word dict, word name);
+Word	  dict_lookup_ptr(word dict, word name, size_t *arg);
 int	  resortDictsInClause(Clause clause);
 void	  resortDictsInTerm(term_t t);
 
 #undef LDFUNC_DECLARATIONS
 
-#define PL_for_dict(dict, funcname, closure, flags) pl_for_dict(dict, LDFUNC_REF(funcname), closure, flags)
+#define _PL_for_dict(dict, funcname, closure, flags) \
+	pl_for_dict(dict, LDFUNC_REF(funcname), closure, flags)
 
 #define termIsDict(w) LDFUNC(termIsDict, w)
 static inline int

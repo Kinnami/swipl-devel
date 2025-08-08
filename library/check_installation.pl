@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker and Richard O'Keefe
     E-mail:        J.Wielemaker@cs.vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2014-2023, VU University Amsterdam
+    Copyright (c)  2014-2025, VU University Amsterdam
                               CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -45,6 +45,7 @@
 :- autoload(library(apply), [maplist/2, maplist/3]).
 :- autoload(library(archive), [archive_open/3, archive_close/1]).
 :- autoload(library(lists), [append/3, member/2]).
+:- autoload(library(occurs), [sub_term/2]).
 :- autoload(library(option), [option/2, merge_options/3]).
 :- autoload(library(prolog_source), [path_segments_atom/2]).
 :- use_module(library(settings), [setting/2]).
@@ -99,11 +100,13 @@ component(library(cgi), _{}).
 component(library(crypt), _{}).
 component(library(bdb), _{}).
 component(library(double_metaphone), _{}).
+component(library(editline), _{os:unix}).
 component(library(filesex), _{}).
 component(library(http/http_stream), _{}).
 component(library(http/json), _{}).
 component(library(http/jquery), _{features:jquery_file}).
 component(library(isub), _{}).
+component(library(janus), _{features:python_version}).
 component(library(jpl), _{}).
 component(library(memfile), _{}).
 component(library(odbc), _{}).
@@ -115,8 +118,7 @@ component(library(pdt_console), _{}).
 component(library(porter_stem), _{}).
 component(library(process), _{}).
 component(library(protobufs), _{}).
-component(library(editline), _{os:unix}).
-component(library(readline), _{os:unix}).
+%component(library(readline), _{os:unix}).
 component(library(readutil), _{}).
 component(library(rlimit), _{os:unix}).
 component(library(semweb/rdf_db), _{}).
@@ -136,8 +138,8 @@ component(library(tipc/tipc), _{os:linux}).
 component(library(unicode), _{}).
 component(library(uri), _{}).
 component(library(uuid), _{}).
-component(library(zlib), _{}).
 component(library(yaml), _{}).
+component(library(zlib), _{}).
 
 issue_base('http://www.swi-prolog.org/build/issues/').
 
@@ -147,7 +149,7 @@ issue_base('http://www.swi-prolog.org/build/issues/').
 :- meta_predicate
     run_silent(0, +).
 
-%!  check_installation
+%!  check_installation is det.
 %
 %   Check features of the installed   system. Performs the following
 %   tests:
@@ -167,6 +169,7 @@ check_installation :-
     check_installation_(InstallIssues),
     check_on_path,
     check_config_files(ConfigIssues),
+    check_autoload,
     maplist(print_message(warning), ConfigIssues),
     append(InstallIssues, ConfigIssues, Issues),
     (   Issues == []
@@ -226,7 +229,7 @@ check_source(Source, Properties) :-
                      ->  call(Pre)
                      ;   true
                      ),
-                     load_files(Source, [silent(true), if(not_loaded)])
+                     load_files(Source, [silent(true), if(true)])
                    ),
                    Properties.put(action, load))
     ->  test_component(Properties),
@@ -244,7 +247,8 @@ check_source(_Source, Properties) :-
 
 current_os(unix)    :- current_prolog_flag(unix, true).
 current_os(windows) :- current_prolog_flag(windows, true).
-current_os(linux)   :- current_prolog_flag(arch, Arch), sub_atom(Arch, _, _, _, linux).
+current_os(linux)   :- current_prolog_flag(arch, Arch),
+                       sub_atom(Arch, _, _, _, linux).
 
 %!  test_component(+Properties) is semidet.
 %
@@ -266,7 +270,9 @@ test_component(_).
 check_features(Dict) :-
     Test = Dict.get(features),
     !,
-    call(Test).
+    catch(Test, Error,
+          ( print_message(warning, Error),
+            fail)).
 check_features(_).
 
 
@@ -438,6 +444,11 @@ check_sweep_lib(Line) :-
     must_be(oneof(['L', 'M']), Type),
     sub_atom(Line, _, A, 0, Lib),
     exists_file(Lib).
+
+python_version :-
+    py_call(sys:version, Version),
+    print_message(informational, installation(janus(Version))).
+
 
 %!  check_on_path
 %
@@ -635,7 +646,11 @@ message(sweep(not_found(Paths))) -->
 message(testing(no_installed_tests)) -->
     [ '  Runtime testing is not enabled.', nl],
     [ '  Please recompile the system with INSTALL_TESTS enabled.' ].
-
+message(janus(Version)) -->
+    [ '  Python version ~w'-[Version] ].
+message(ambiguous_autoload(PI, Paths)) -->
+    [ 'The predicate ~p can be autoloaded from multiple libraries:'-[PI]],
+    sequence(list_file, Paths).
 
 public_executable(EXE, PublicProg) :-
     file_base_name(EXE, Prog),
@@ -671,12 +686,11 @@ strip_stack(Error, Error).
 details(Properties) -->
     { issue_url(Properties, URL), !
     },
-    [ nl, 'See ~w'-[URL] ].
+    [ nl, 'See '-[], url(URL) ].
 details(_) --> [].
 
 explain(Messages) -->
-    { Messages = [message(error(shared_object(open, _Message), _), _, _)|_]
-    },
+    { shared_object_error(Messages) },
     !,
     [nl],
     (   { current_prolog_flag(windows, true) }
@@ -685,6 +699,11 @@ explain(Messages) -->
     ).
 explain(Messages) -->
     print_messages(Messages).
+
+shared_object_error(Messages) :-
+    sub_term(Term, Messages),
+    subsumes_term(error(shared_object(open, _Message), _), Term),
+    !.
 
 print_messages([]) --> [].
 print_messages([message(_Term, _Kind, Lines)|T]) -->
@@ -843,3 +862,33 @@ config_issue(moved(Type, Old, New)) -->
 config_issue(different(Type, Old, New)) -->
     [ '  found different ~w "~w"'-[Type, Old], nl ],
     [ '  new location is "~w"'-[New] ].
+
+		 /*******************************
+		 *         AUTO LOADING		*
+		 *******************************/
+
+%!  check_autoload
+%
+%   Find possible ambiguous predicates in the autoload index.
+
+check_autoload :-
+    findall(Name/Arity, '$in_library'(Name, Arity, _Path), PIs),
+    msort(PIs, Sorted),
+    clumped(Sorted, Clumped),
+    sort(2, >=, Clumped, ClumpedS),
+    ambiguous_autoload(ClumpedS).
+
+ambiguous_autoload([PI-N|T]) :-
+    N > 1,
+    !,
+    warn_ambiguous_autoload(PI),
+    ambiguous_autoload(T).
+ambiguous_autoload(_).
+
+warn_ambiguous_autoload(PI) :-
+    PI = Name/Arity,
+    findall(PlFile,
+            ( '$in_library'(Name, Arity, File),
+              file_name_extension(File, pl, PlFile)
+            ), PlFiles),
+    print_message(warning, installation(ambiguous_autoload(PI, PlFiles))).

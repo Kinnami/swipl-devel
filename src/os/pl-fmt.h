@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2017, University of Amsterdam
-                              VU University Amsterdam
+    Copyright (c)  2024, University of Amsterdam
+                         VU University Amsterdam
+			 CWI, Amsterdam
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -33,18 +34,12 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef _PL_FMT_H
-#define _PL_FMT_H
-#include "../pl-incl.h"
+#ifndef FMT_H_INCLUDED
+#define FMT_H_INCLUDED
 
-		 /*******************************
-		 *    FUNCTION DECLARATIONS	*
-		 *******************************/
+COMMON(char *)	formatInteger(PL_locale *locale, int div, int radix,
+			      bool smll, Number n, Buffer out);
+COMMON(bool)	do_format(IOSTREAM *fd, PL_chars_t *fmt,
+			  int argc, term_t argv, Module m);
 
-word		pl_format_predicate(term_t chr, term_t descr);
-word		pl_current_format_predicate(term_t chr, term_t descr,
-					    control_t h);
-word		pl_format(term_t fmt, term_t args);
-word		pl_format3(term_t s, term_t fmt, term_t args);
-
-#endif /*_PL_FMT_H*/
+#endif /*FMT_H_INCLUDED*/

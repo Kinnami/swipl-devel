@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2022, University of Amsterdam
+    Copyright (c)  2011-2024, University of Amsterdam
                               VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -117,29 +117,35 @@ isquote(int chr)
 { return chr && strchr("'`\"", chr) != NULL;
 }
 
-static int
-fupper(int chr)
-{
-#if SIZEOF_WINT_T == 2
-  if ( chr > 0xffff ) return -1;
-#endif
-  return iswlower(chr) ? (int)towupper(chr) : -1;
-}
 
-static int
-flower(int chr)
-{
-#if SIZEOF_WINT_T == 2
-  if ( chr > 0xffff ) return -1;
-#endif
-  return iswupper(chr) ? (int)towlower(chr) : -1;
-}
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Character  based  case conversion.   This  is  not well  supported  on
+Windows as  `wint_t` is only  16 bits.   We use the  string conversion
+functions instead.   Now, in theory,  the case converted version  of a
+Unicode character can  have multiple characters.  For now,  we print a
+warning.  This does not seem to happen on Windows.  To test, use
+
+    ?- forall(between(0, 0x10ffff, X), code_type(X, to_lower(U))).
+    ?- forall(between(0, 0x10ffff, X), code_type(X, to_upper(L))).
+
+The fupper() and flower() function only return a value if the input is
+lower/upper.   We have  the same  `wint_t` problem  here and  assume a
+character is  not lower if `ftoupper(c)  != c`.  This too  is somewhat
+dubious.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static int
 ftoupper(int chr)
 {
 #if SIZEOF_WINT_T == 2
-  if ( chr > 0xffff ) return chr;
+  wchar_t tmp[4];
+  int upr;
+
+  *put_wchar(tmp, chr) = 0;
+  _wcsupr_s(tmp, sizeof(tmp)/sizeof(wchar_t));
+  if ( *get_wchar(tmp, &upr) )
+    Sdprintf("Oops, upper for u%x has multiple characters\n");
+  return upr;
 #endif
   return towupper(chr);
 }
@@ -148,9 +154,36 @@ static int
 ftolower(int chr)
 {
 #if SIZEOF_WINT_T == 2
-  if ( chr > 0xffff ) return chr;
+  wchar_t tmp[4];
+  int lwr;
+
+  *put_wchar(tmp, chr) = 0;
+  _wcslwr_s(tmp, sizeof(tmp)/sizeof(wchar_t));
+  if ( *get_wchar(tmp, &lwr) )
+    Sdprintf("Oops, lower for u%x has multiple characters\n");
+  return lwr;
 #endif
   return towlower(chr);
+}
+
+static int
+fupper(int chr)
+{
+#if SIZEOF_WINT_T == 2
+  int upr = ftoupper(chr);
+  return upr == chr ? -1 : upr;
+#endif
+  return iswlower(chr) ? (int)towupper(chr) : -1;
+}
+
+static int
+flower(int chr)
+{
+#if SIZEOF_WINT_T == 2
+  int lwr = ftoupper(chr);
+  return lwr == chr ? -1 : lwr;
+#endif
+  return iswupper(chr) ? (int)towlower(chr) : -1;
 }
 
 static int
@@ -363,8 +396,8 @@ do_char_type(term_t chr, term_t class, control_t h, int how)
 	return PL_error("char_type", 2, NULL, ERR_INSTANTIATION);
 
       if ( !(do_enum & ENUM_CHAR) )
-      { if ( !PL_get_char_ex(chr, &c, TRUE) )
-	  return FALSE;
+      { if ( !PL_get_char_ex(chr, &c, true) )
+	  return false;
 	if ( c == -1 )
 	  return PL_unify_atom(class, ATOM_end_of_file);
       }
@@ -378,7 +411,7 @@ do_char_type(term_t chr, term_t class, control_t h, int how)
 
       if ( do_enum == ENUM_NONE )
       { if ( arity == 0 )
-	  return (*cc->test)(c) ? TRUE : FALSE;
+	  return (*cc->test)(c) ? true : false;
 	else
 	{ int rval = (*cc->test)(c);
 
@@ -394,7 +427,7 @@ do_char_type(term_t chr, term_t class, control_t h, int how)
 	      ok = PL_unify_integer(a, rval);
 
 	    if ( ok )
-	      return TRUE;
+	      return true;
 	    else
 	      do_enum = ENUM_CHAR;	/* try the other way around */
 	  } else
@@ -408,7 +441,7 @@ do_char_type(term_t chr, term_t class, control_t h, int how)
 
 	_PL_get_arg(1, class, a);
 	if ( !PL_is_variable(a) )
-	{ if ( PL_get_char(a, &ca, FALSE) )
+	{ if ( PL_get_char(a, &ca, false) )
 	  { int c = (*cc->reverse)(ca);
 
 	    if ( c < 0 )
@@ -507,14 +540,14 @@ PRED_IMPL("iswctype", 2, iswctype, 0)
   int chr;
   wctype_t t;
 
-  if ( !PL_get_char_ex(A1, &chr, FALSE) ||
+  if ( !PL_get_char_ex(A1, &chr, false) ||
        !PL_get_chars(A2, &s, CVT_ATOM|CVT_EXCEPTION) )
-    return FALSE;
+    return false;
 
   if ( !(t=wctype(s)) )
     return PL_error(NULL, 0, NULL, ERR_EXISTENCE, ATOM_type, A2);
 
-  return iswctype(chr, t) ? TRUE : FALSE;
+  return iswctype(chr, t) ? true : false;
 }
 #endif
 
@@ -547,12 +580,40 @@ get_chr_from_text(const PL_chars_t *t, size_t *index)
 #define modify_case_atom(in, out, down, text_type) \
 	LDFUNC(modify_case_atom, in, out, down, text_type)
 
+static void
+modify_case_latin_1_to_wide(PL_chars_t *tin, PL_chars_t *tout, Buffer b, int down)
+{ const unsigned char *in = (const unsigned char*)tin->text.t;
+  PL_free_text(tout);
+  initBuffer(b);
+
+  if ( down )
+  { for(size_t i=0; i<tin->length; i++)
+    { wint_t c = ftolower(in[i]);
+
+      addWcharBuffer(b, c);
+    }
+  } else				/* upcase */
+  { for(size_t i=0; i<tin->length; i++)
+    { wint_t c = ftoupper(in[i]);
+
+      addWcharBuffer(b, c);
+    }
+  }
+
+  tout->storage   = PL_CHARS_HEAP;
+  tout->text.w    = baseBuffer(b, wchar_t);
+  tout->length    = entriesBuffer(b, wchar_t);
+  tout->encoding  = ENC_WCHAR;
+  tout->canonical = false;
+}
+
+
 static foreign_t
 modify_case_atom(DECL_LD term_t in, term_t out, int down, int text_type)
 { PL_chars_t tin, tout;
 
   if ( !PL_get_text(in, &tin, CVT_ATOMIC|CVT_EXCEPTION) )
-    return FALSE;
+    return false;
 
   if ( PL_get_text(out, &tout, CVT_ATOMIC) )
   { size_t i1=0, i2=0;
@@ -566,16 +627,17 @@ modify_case_atom(DECL_LD term_t in, term_t out, int down, int text_type)
 
       if ( down )
       { if ( co != ftolower(ci) )
-	  return FALSE;
+	  return false;
       } else
       { if ( co != ftoupper(ci) )
-	  return FALSE;
+	  return false;
       }
     }
 
-    return TRUE;
+    return true;
   } else if ( PL_is_variable(out) )
   { tmp_buffer b;
+    int rc;
 
     if ( tin.encoding == ENC_ISO_LATIN_1 )
     { const unsigned char *in = (const unsigned char*)tin.text.t;
@@ -583,7 +645,7 @@ modify_case_atom(DECL_LD term_t in, term_t out, int down, int text_type)
 
       tout.encoding  = tin.encoding;
       tout.length    = tin.length;
-      tout.canonical = TRUE;
+      tout.canonical = true;
       if ( tout.length < sizeof(tout.buf) )
       { tout.text.t  = tout.buf;
 	tout.storage = PL_CHARS_LOCAL;
@@ -594,16 +656,22 @@ modify_case_atom(DECL_LD term_t in, term_t out, int down, int text_type)
 
       if ( down )
       { for(i=0; i<tin.length; i++)
-	{ wint_t c = towlower(in[i]);
+	{ wint_t c = ftolower(in[i]);
 
-	  assert(c <= 0xff);
+	  if ( c > 0xff )
+	  { modify_case_latin_1_to_wide(&tin, &tout, (Buffer)&b, down);
+	    break;
+	  }
 	  tout.text.t[i] = (char)c;
 	}
       } else				/* upcase */
       { for(i=0; i<tin.length; i++)
-	{ wint_t c = towupper(in[i]);
+	{ wint_t c = ftoupper(in[i]);
 
-	  assert(c <= 0xff);
+	  if ( c > 0xff )
+	  { modify_case_latin_1_to_wide(&tin, &tout, (Buffer)&b, down);
+	    break;
+	  }
 	  tout.text.t[i] = (char)c;
 	}
       }
@@ -632,15 +700,16 @@ modify_case_atom(DECL_LD term_t in, term_t out, int down, int text_type)
       tout.text.w    = baseBuffer(&b, wchar_t);
       tout.length    = entriesBuffer(&b, wchar_t);
       tout.encoding  = ENC_WCHAR;
-      tout.canonical = FALSE;
+      tout.canonical = false;
     }
 
-    PL_unify_text(out, 0, &tout, text_type);
+    rc = PL_unify_text(out, 0, &tout, text_type);
+    PL_free_text(&tin);
     PL_free_text(&tout);
-    if ( tin.encoding != ENC_ISO_LATIN_1 )
+    if ( tout.encoding != ENC_ISO_LATIN_1 )
       discardBuffer(&b);
 
-    succeed;
+    return rc;
   } else
   { return PL_error(NULL, 0, NULL, ERR_TYPE,
 		    text_type == PL_STRING ? ATOM_string : ATOM_atom,
@@ -652,28 +721,28 @@ modify_case_atom(DECL_LD term_t in, term_t out, int down, int text_type)
 static
 PRED_IMPL("downcase_atom", 2, downcase_atom, 0)
 { PRED_LD
-  return modify_case_atom(A1, A2, TRUE, PL_ATOM);
+  return modify_case_atom(A1, A2, true, PL_ATOM);
 }
 
 
 static
 PRED_IMPL("upcase_atom", 2, upcase_atom, 0)
 { PRED_LD
-  return modify_case_atom(A1, A2, FALSE, PL_ATOM);
+  return modify_case_atom(A1, A2, false, PL_ATOM);
 }
 
 
 static
 PRED_IMPL("string_lower", 2, string_lower, 0)
 { PRED_LD
-  return modify_case_atom(A1, A2, TRUE, PL_STRING);
+  return modify_case_atom(A1, A2, true, PL_STRING);
 }
 
 
 static
 PRED_IMPL("string_upper", 2, string_upper, 0)
 { PRED_LD
-  return modify_case_atom(A1, A2, FALSE, PL_STRING);
+  return modify_case_atom(A1, A2, false, PL_STRING);
 }
 
 
@@ -705,14 +774,14 @@ copy_non_separators(IOSTREAM *out, PL_chars_t *t, size_t *i)
     int c  = get_chr_from_text(t, &at);
 
     if ( c == -1 )
-      return TRUE;
+      return true;
 
     if ( !unicode_separator(c) )
     { *i=at;
       if ( Sputcode(c, out) < 0 )
-	return FALSE;
+	return false;
     } else
-      return TRUE;
+      return true;
   }
 }
 
@@ -724,7 +793,7 @@ write_normalize_space(IOSTREAM *out, term_t in)
   size_t i = 0, end;
 
   if ( !PL_get_text(in, &tin, CVT_ATOMIC|CVT_EXCEPTION) )
-    return FALSE;
+    return false;
 
   end = tin.length;
   skip_separators(&tin, &i);
@@ -733,20 +802,20 @@ write_normalize_space(IOSTREAM *out, term_t in)
     skip_separators(&tin, &i);
     if ( i < end )
     { if (  Sputcode(' ', out) < 0 )
-	return FALSE;
+	return false;
     }
   }
 
-  return TRUE;
+  return true;
 }
 
 
 static
 PRED_IMPL("normalize_space", 2, normalize_space, 0)
 { redir_context ctx;
-  word rc;
+  foreign_t rc;
 
-  if ( (rc = setupOutputRedirect(A1, &ctx, FALSE)) )
+  if ( (rc = setupOutputRedirect(A1, &ctx, false)) )
   { if ( (rc = write_normalize_space(ctx.stream, A2)) )
       rc = closeOutputRedirect(&ctx);
     else
@@ -808,7 +877,7 @@ message isn't really cute. It would be better to use printMessage(), but
 the system isn't yet initialised far enough.   Maybe we should store the
 failure and print a message at the end of the initialisation?
 
-We only return FALSE if LC_CTYPE  fails.   This  is a serious indication
+We only return false if LC_CTYPE  fails.   This  is a serious indication
 that locale support is broken. We don't   depend too much on the others,
 so we ignore possible problems.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */

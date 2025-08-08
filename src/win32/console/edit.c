@@ -3,7 +3,8 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1999-2011, University of Amsterdam
+    Copyright (c)  1999-2025, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -61,9 +62,9 @@ static void	bind_actions(void);
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #endif
 
-#ifndef TRUE
-#define TRUE 1
-#define FALSE 0
+#ifndef true
+#define true 1
+#define false 0
 #endif
 
 #ifndef EOS
@@ -344,6 +345,42 @@ interrupt(Line ln, int chr)
 { raise(SIGINT);
 }
 
+#define isQuote(c) ((c) == '\'' || (c) == '"' || (c) == '`')
+
+static int
+needs_escape(const wchar_t *s, int q)
+{ int count = 0;
+  for( ; *s; s++)
+  { if ( *s == '\\' || *s == q )
+      count++;
+  }
+  return count;
+}
+
+static void
+paste_quoted(Line ln, int chr)
+{ wchar_t *text = rlc_clipboard_text(ln->console);
+  if ( text )
+  { int q = ln->point > 0 ? ln->data[ln->point-1] : 0;
+    size_t len = wcslen(text);
+
+    if ( !isQuote(q) )
+    { q = '\'';
+      insert_self(ln, q);
+    }
+    len += needs_escape(text, q)+1;
+    make_room(ln, len);
+    for(wchar_t *s=text ; *s; s++)
+    { if ( *s == '\\' || *s == q )
+	ln->data[ln->point++] = '\\';
+      ln->data[ln->point++] = *s;
+    }
+    ln->data[ln->point++] = q;
+    rlc_free(text);
+  }
+}
+
+
 		 /*******************************
 		 *		HISTORY		*
 		 *******************************/
@@ -500,7 +537,7 @@ list_completions(Line ln, int chr)
 
 	  while(*msg)
 	    rlc_putchar(ln->console, *msg++);
-	  ln->reprompt = TRUE;
+	  ln->reprompt = true;
 	  data->call_type = COMPLETE_CLOSE;
 	  (*data->function)(data);
 	  return;
@@ -537,7 +574,7 @@ list_completions(Line ln, int chr)
 	rlc_putchar(ln->console, '\n');
       }
 
-      ln->reprompt = TRUE;
+      ln->reprompt = true;
     }
   }
 }
@@ -570,7 +607,7 @@ update_display(Line ln)
     rlc_get_mark(ln->console, &ln->origin);
 
     ln->change_start = 0;
-    ln->reprompt = FALSE;
+    ln->reprompt = false;
   }
 
   rlc_goto_mark(ln->console, &ln->origin, ln->data, ln->change_start);
@@ -628,7 +665,7 @@ read_line(rlc_console b)
 
     (*func)(&ln, c);
     if ( m0.mark_x != m1.mark_x || m0.mark_y != m1.mark_y )
-      ln.reprompt = TRUE;
+      ln.reprompt = true;
     update_display(&ln);
   }
   rlc_clearprompt(b);
@@ -644,7 +681,7 @@ read_line(rlc_console b)
 		 *******************************/
 
 static void
-init_dispatch_table()
+init_dispatch_table(void)
 { static int done;
 
   if ( !done )
@@ -659,7 +696,7 @@ init_dispatch_table()
 
     bind_actions();
 
-    done = TRUE;
+    done = true;
   }
 }
 
@@ -686,7 +723,7 @@ static action actions[] = {
   ACTION("insert_self",		      insert_self,		 ""),
   ACTION("backward_delete_character", backward_delete_character, "\b"),
   ACTION("complete",		      complete,			 "\t"),
-  ACTION("enter",		      enter, 			 "\r\n"),
+  ACTION("enter",		      enter,			 "\r\n"),
   ACTION("start_of_line",	      start_of_line,		 {ctrl('A')}),
   ACTION("backward_character",	      backward_character,        {ctrl('B')}),
   ACTION("interrupt",		      interrupt,		 {ctrl('C')}),
@@ -698,6 +735,7 @@ static action actions[] = {
   ACTION("forward_history",	      forward_history,		 {ctrl('N')}),
   ACTION("empty_line",		      empty_line,		 {ctrl('U')}),
   ACTION("eof",			      eof,			 {ctrl('Z')}),
+  ACTION("paste_quoted",	      paste_quoted,		 {ctrl('Y')}),
 
   ACTION("delete_character_or_eof",   delete_character_or_eof,	 {ctrl('D')}),
   ACTION("delete_character",	      delete_character,		 {127}),
@@ -710,7 +748,7 @@ static action actions[] = {
   ACTION(NULL,			      NULL,			 "")
 };
 
-int
+bool
 rlc_bind(int chr, const char *fname)
 { if ( chr >= 0 && chr <= 256 )
   { Action a = actions;
@@ -722,16 +760,16 @@ rlc_bind(int chr, const char *fname)
 	else
 	  dispatch_table[chr] = a->function;
 
-	return TRUE;
+	return true;
       }
     }
   }
 
-  return FALSE;
+  return false;
 }
 
 static void
-bind_actions()
+bind_actions(void)
 { Action a = actions;
 
   for( ; a->name; a++ )
@@ -747,5 +785,3 @@ bind_actions()
     }
   }
 }
-
-

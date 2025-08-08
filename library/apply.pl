@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2007-2020, University of Amsterdam
+    Copyright (c)  2007-2023, University of Amsterdam
                               VU University Amsterdam
                               SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -56,6 +56,7 @@
                                         % ?V0, ?Vs
           ]).
 :- autoload(library(error),[must_be/2]).
+:- set_prolog_flag(generate_debug_info, false).
 
 /** <module> Apply predicates on a list
 
@@ -73,7 +74,7 @@ means that these calls are identical:
 @see    apply_macros.pl provides compile-time expansion for part of this
         library.
 @see    http://www.cs.otago.ac.nz/staffpriv/ok/pllib.htm
-@see    Unit test code in src/Tests/library/test_apply.pl
+@see    Unit test code in tests/library/test_apply.pl
 @tbd    Add include/4, include/5, exclude/4, exclude/5
 */
 

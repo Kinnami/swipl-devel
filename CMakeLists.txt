@@ -1,39 +1,48 @@
 set(CMAKE_POLICY_DEFAULT_CMP0074 NEW)
 set(CMAKE_POLICY_DEFAULT_CMP0075 NEW)
 set(CMAKE_POLICY_DEFAULT_CMP0079 NEW)
+set(CMAKE_POLICY_DEFAULT_CMP0177 NEW)
 
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 project(SWI-Prolog)
 
+if(CMAKE_BINARY_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  message(FATAL_ERROR
+	  " Can not build in the source directory.\n"
+	  " Please create a subdirectory and build in that directory.  E.g.\n"
+	  "     mkdir build\n"
+	  "     cd build\n"
+	  "     cmake [option ...] ..")
+endif()
+
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+# While GCC is good at optimization large   functions, MSVC is bad at it
+# and using VMI functions more then   doubles the performance. For Clang
+# the picture is less clear. The difference  is small, with a slight win
+# on either depending on CPU and workload.
+
+if(MSVC OR CMAKE_C_COMPILER_ID STREQUAL Clang)
+  set(DEFAULT_VMI_FUNCTIONS ON)
+else()
+  set(DEFAULT_VMI_FUNCTIONS OFF)
+endif()
 
 option(MULTI_THREADED
        "Enable multiple Prolog threads"
        ON)
 option(ENGINES
        "Enable multiple Prolog engines"
-       OFF)
+       ON)
 option(VMI_FUNCTIONS
        "Create a function for each VM instruction"
-       OFF)
+       ${DEFAULT_VMI_FUNCTIONS})
 option(USE_SIGNALS
        "Enable signal handling"
        ON)
 option(USE_GMP
        "Use GNU MP Bignum library (LGPL)"
        ON)
-if(USE_GMP)
-  set(DEFAULT_USE_LIBBF OFF)
-else()
-  set(DEFAULT_USE_LIBBF ON)
-endif()
-option(USE_LIBBF
-       "Use LibBF for bignums (MIT)"
-       ${DEFAULT_USE_LIBBF})
-if(USE_GMP AND USE_LIBBF)
-  message(WARNING "Cannot use both libGMP and LibBF; using LibBF")
-  set(USE_GMP OFF)
-endif()
 if(APPLE)
 # tcmalloc breaks setlocale() on MacOS 12 (Monterey)
 option(USE_TCMALLOC
@@ -47,6 +56,9 @@ endif()
 option(SWIPL_SHARED_LIB
        "Put kernel in a shared library"
        ON)
+option(SWIPL_SO_VERSIONS
+       "Set the version properties of libswipl"
+       ON)
 option(SWIPL_VERSIONED_DIR
        "Install into a versioned directory"
        OFF)
@@ -56,6 +68,15 @@ option(SWIPL_INSTALL_IN_LIB
 option(SWIPL_INSTALL_IN_SHARE
        "Install docs in ${CMAKE_INSTALL_PREFIX}/share/swipl"
        OFF)
+if(WIN32)
+option(SWIPL_INSTALL_AS_LINK
+       "Install public binaries using a symlink"
+       OFF)
+else()
+option(SWIPL_INSTALL_AS_LINK
+       "Install public binaries using a symlink"
+       ON)
+endif()
 option(SWIPL_M32
        "Build 32-bit version on 64-bit Linux using multilib and gcc -m32"
        OFF)
@@ -86,12 +107,32 @@ option(BUILD_SWIPL_LD
 option(INSTALL_TESTS
        "Install script and files needed to run tests of the final installation"
        OFF)
+option(INSTALL_QLF
+       "Build and install .qlf files for all libraries"
+       ON)
+option(INSTALL_PROLOG_SRC
+       "Install the Prolog sources (.pl files)"
+       ON)
 option(GCOV
        "Compile for coverage analysis using gcov (gcc)"
        OFF)
 option(STATIC_EXTENSIONS
        "Add foreign extensions statically"
        OFF)
+if(EMSCRIPTEN)
+  set(DEFAULT_CCACHE OFF)
+else()
+  set(DEFAULT_CCACHE ON)
+endif()
+option(CCACHE
+       "Use ccache when available"
+       ${DEFAULT_CCACHE})
+option(VALIDATE_API
+       "Add runtime argument checks for PL_*() functions"
+       ON)
+option(EPILOG
+       "Configure Prolog for using the XPCE Epilog interface"
+       ON)
 
 set(JNIDIR ""
     CACHE STRING "Directory for linking Java JNI components")
@@ -100,101 +141,41 @@ if(NOT SWIPL_SHARED_LIB)
   set(CMAKE_ENABLE_EXPORTS ON)
 endif()
 
+set(CMAKE_C_STANDARD 11)
+
 include(Utils)
 include(BuildType)
 include(Version)
 include(PGO)
-include(Ports)
 include(Locations)
+include(Ports)
+include(LocationsPostPorts)
 include(InstallSource)
 include(QLF)
 include(PackageSelection)
 include(Dependencies)
 include(DocDepends)
 
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-  set_install_prefix()
-  message("-- Using install prefix \"${CMAKE_INSTALL_PREFIX}\"")
+if(GMP_FOUND)
+  set(USE_LIBBF_DEFAULT OFF)
+else()
+  set(USE_LIBBF_DEFAULT ON)
 endif()
+
+option(USE_LIBBF
+       "Use LibBF for bignums (MIT)"
+       ${USE_LIBBF_DEFAULT})
 
 # Verbosity
 set(CMAKE_INSTALL_MESSAGE NEVER)
 
-################
-# Installation directories
-
-if(WIN32 AND NOT MSYS2)
-
-  set(SWIPL_INSTALL_DIR "."
-      CACHE STRING "Directory below <prefix> for installation")
-  set(SWIPL_INSTALL_PREFIX   ${SWIPL_INSTALL_DIR})
-  set(SWIPL_INSTALL_ARCH_EXE ${SWIPL_INSTALL_PREFIX}/bin)
-  set(SWIPL_INSTALL_ARCH_LIB ${SWIPL_INSTALL_PREFIX}/bin)
-  set(SWIPL_INSTALL_MODULES  ${SWIPL_INSTALL_PREFIX}/bin)
-  # Place all .exe and .dll in one directory
-  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/src)
-  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/src)
-  set(SWIPL_TMP_DIR "c:/tmp" CACHE STRING
-      "Directory to be used if the environment variable TEMP is not set")
-
-else()
-
-  if(SWIPL_VERSIONED_DIR)
-    set(SWIPL_INSTALL_DIR_DEF  swipl-${SWIPL_VERSION_STRING})
-  else()
-    set(SWIPL_INSTALL_DIR_DEF  swipl)
-  endif()
-
-  set(SWIPL_INSTALL_DIR ${SWIPL_INSTALL_DIR_DEF}
-    CACHE STRING "Directory below <prefix> for installation")
-  if ($ENV{AMISHARE_TARGET_DISTRO} MATCHES "Android")
-  set(SWIPL_TMP_DIR "tmp" CACHE STRING
-    "Directory to be used if the environment variable TMP is not set")
-  else()
-  set(SWIPL_TMP_DIR "/tmp" CACHE STRING
-    "Directory to be used if the environment variable TMP is not set")
-  endif()
-
-  if(BUILD_MACOS_BUNDLE)
-    set(SWIPL_INSTALL_PREFIX    SWI-Prolog.app/Contents/swipl)
-    set(SWIPL_INSTALL_ARCH_EXE  SWI-Prolog.app/Contents/MacOS)
-    set(SWIPL_INSTALL_ARCH_LIB  SWI-Prolog.app/Contents/Frameworks)
-    set(SWIPL_INSTALL_MANPAGES  SWI-Prolog.app/Contents/man)
-    set(SWIPL_INSTALL_PKGCONFIG SWI-Prolog.app/Contents/pkgconfig)
-    set(SWIPL_INSTALL_RESOURCES SWI-Prolog.app/Contents/Resources)
-  else()
-    set(SWIPL_INSTALL_PREFIX   lib/${SWIPL_INSTALL_DIR})
-    if(SWIPL_INSTALL_IN_SHARE)
-      set(SWIPL_INSTALL_SHARE_PREFIX share/${SWIPL_INSTALL_DIR})
-    endif()
-    set(SWIPL_INSTALL_ARCH_EXE ${SWIPL_INSTALL_PREFIX}/bin/${SWIPL_ARCH})
-    set(SWIPL_INSTALL_ARCH_LIB ${SWIPL_INSTALL_PREFIX}/lib/${SWIPL_ARCH})
-    set(SWIPL_INSTALL_MANPAGES share/man/man1
-        CACHE STRING "Directory for man pages")
-    set(SWIPL_INSTALL_PKGCONFIG share/pkgconfig
-        CACHE STRING "Directory for pkg-config pages")
-  endif()
-
-  set(SWIPL_INSTALL_MODULES  ${SWIPL_INSTALL_PREFIX}/lib/${SWIPL_ARCH})
-
-endif()
-
-set(SWIPL_CMAKE_NAMESPACE swipl::)
-set(SWIPL_INSTALL_CMAKE_CONFIG_DIR lib/cmake/swipl)
-
-if(NOT SWIPL_INSTALL_SHARE_PREFIX)
-  set(SWIPL_INSTALL_SHARE_PREFIX "${SWIPL_INSTALL_PREFIX}")
-endif()
-
-set(SWIPL_BOOT_BASE        "boot.prc")
-set(SWIPL_BOOT_FILE        "${CMAKE_BINARY_DIR}/home/${SWIPL_BOOT_BASE}")
-set(SWIPL_INSTALL_LIBRARY  ${SWIPL_INSTALL_PREFIX}/library)
-set(SWIPL_INSTALL_BOOT     ${SWIPL_INSTALL_PREFIX}/boot)
-set(SWIPL_INSTALL_INCLUDE  ${SWIPL_INSTALL_PREFIX}/include)
-set(SWIPL_INSTALL_DOC	   ${SWIPL_INSTALL_SHARE_PREFIX}/doc)
-if(INSTALL_TESTS)
-   set(INSTALL_TESTS_DIR   ${SWIPL_INSTALL_PREFIX}/test)
-endif()
+if(CCACHE)
+  find_program(PROG_CCACHE ccache)
+  if(PROG_CCACHE)
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ${PROG_CCACHE})
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ${PROG_CCACHE})
+  endif(PROG_CCACHE)
+endif(CCACHE)
 
 if(NOT SWIPL_PKG_NAME)
   if(SWIPL_INSTALL_DIR STREQUAL "swi-prolog")
@@ -213,17 +194,13 @@ endif()
 # on ARM, backtrace() requires -funwind-tables. See
 # https://stackoverflow.com/questions/24700150/on-raspberry-pi-backtrace-returns-0-frames
 # We must do this at the toplevel to ensure all packages use this as well.
-if(CMAKE_COMPILER_IS_GNUCC AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
+if( (CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL Clang) AND
+    CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
   include(CheckFunctionExists)
   check_function_exists(backtrace HAVE_BACKTRACE)
   if(HAVE_BACKTRACE)
     add_compile_options(-funwind-tables)
   endif()
-endif()
-
-if(MACOS_UNIVERSAL_BINARY)
-# Does not work!?  Now uses CFLAGS=-arcg x86_64 on M1.  See scripts/make-distribution
-# add_compile_options("SHELL:-arch x86_64" "SHELL:-arch arm64")
 endif()
 
 if(SWIPL_M32)
@@ -236,8 +213,22 @@ endif()
 
 # Configuration we need everywhere
 if(MULTI_THREADED)
-  set(THREADS_PREFER_PTHREAD_FLAG TRUE)
-  find_package(Threads)
+  if(NOT TARGET Threads::Threads)
+    if(MSVC AND NOT ENV{CONDA_BUILD})
+      find_package(PThreads4W)
+    endif()
+    if(TARGET PThreads4W::PThreads4W)
+      add_library(Threads::Threads ALIAS PThreads4W::PThreads4W)
+      set(CMAKE_USE_PTHREADS_INIT ON)
+    else()
+      if(WIN32 AND NOT MINGW)
+	set(THREADS_USE_PTHREADS_WIN32 TRUE)
+      else()
+	set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+      endif()
+      find_package(Threads)
+    endif()
+  endif()
 endif()
 
 include(TestLargeFiles)
@@ -268,8 +259,8 @@ if(INSTALL_DOCUMENTATION)
   add_custom_command(
       OUTPUT ${MAN_INDEX}
       COMMAND ${PROG_SWIPL} -f none --no-packs --home=${SWIPL_BUILD_HOME}
-			    -g "use_module(library(prolog_install))"
-	                    -g cmake_save_man_index -t halt
+			    -g "use_module(library(pldoc/man_index))"
+	                    -g save_man_index -t halt
       DEPENDS swipl core doc.html
       VERBATIM)
   add_custom_target(
@@ -290,17 +281,55 @@ if(INSTALL_DOCUMENTATION)
 	  DESTINATION ${SWIPL_INSTALL_DOC}/packages)
 endif(INSTALL_DOCUMENTATION)
 
+################################################################
+# Testing
+
+set(SWIPL_TEST_DIRS unprotected core db attvar debug tabling library
+    compile charset eclipse clp GC save files transaction
+    xsb/basic_tests xsb/ai_tests xsb/ptq xsb/neg_tests xsb/delay_tests
+    xsb/wfs_tests xsb/table_tests xsb/incremental_tests xsb/nonmt_tests
+    xsb/sub_tests xsb/attv_tests)
+if(MULTI_THREADED)
+  list(APPEND SWIPL_TEST_DIRS thread thread_wait signals)
+endif()
+if(ENGINES)
+  list(APPEND SWIPL_TEST_DIRS engines)
+endif()
+if(O_BIGNUM)
+  list(APPEND SWIPL_TEST_DIRS rational)
+endif()
+
+add_test(NAME swipl:abi-version
+	 COMMAND ${PROG_SWIPL} --abi-version)
+add_test(NAME swipl:basic
+	 COMMAND ${PROG_SWIPL} -f none --no-packs --on-error=status
+	 -q ${CMAKE_CURRENT_SOURCE_DIR}/tests/test.pl --no-subdirs)
+foreach(test ${SWIPL_TEST_DIRS})
+  add_test(NAME swipl:${test}
+	   COMMAND ${PROG_SWIPL} -f none --no-packs --on-error=status
+	   -q ${CMAKE_CURRENT_SOURCE_DIR}/tests/test.pl --no-core ${test})
+endforeach()
+
 # Install a prolog script to run tests on target device
 # in which ctest is not available
 if(INSTALL_TESTS)
   set(INSTALL_TESTS_DIR ${SWIPL_INSTALL_PREFIX}/test)
   set(PKGS_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/packages)
   set(INSTALL_TESTS_DB ${CMAKE_BINARY_DIR}/cmake_pkg_tests.db)
+
+# Use a function to scope CMAKE_INSTALL_DEFAULT_COMPONENT_NAME
+function(install_tests)
+  set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME Tests)
+  install(DIRECTORY   ${CMAKE_CURRENT_SOURCE_DIR}/tests/
+          DESTINATION ${INSTALL_TESTS_DIR}
+	  PATTERN "*~" EXCLUDE)
   #Move test db to installation
   install(FILES       ${INSTALL_TESTS_DB}
-	  DESTINATION ${INSTALL_TESTS_DIR}
-	  COMPONENT   Tests)
+	  DESTINATION ${INSTALL_TESTS_DIR})
   file(REMOVE ${INSTALL_TESTS_DB})
+endfunction()
+
+install_tests()
 endif(INSTALL_TESTS)
 
 # Add the packages
@@ -320,6 +349,9 @@ endif()
 
 # Check for environment variables that may cause the build to fail
 include(CheckEnv)
+
+# Configure and install desktop integration files.
+include(Desktop)
 
 # Packaging
 include(Pack)

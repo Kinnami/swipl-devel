@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2020, University of Amsterdam
+    Copyright (c)  1985-2025, University of Amsterdam
                               VU University Amsterdam
                               CWI Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -80,15 +81,10 @@ read_history_(Raw, Term, Options) :-
     ->  '$current_typein_module'(Module)
     ;   true
     ),
-    (   '$select'(variable_names(Bindings), Options, Options1)
-    ->  true
-    ;   Options1 = Options,
-        i(Bindings)                     % ignore
-    ),
+    '$option'(variable_names(Bindings), Options, Bindings0),
     catch(read_term_from_atom(Expanded, Term0,
                               [ module(Module),
                                 variable_names(Bindings0)
-                              | Options1
                               ]),
           E,
           (   print_message(error, E),
@@ -109,10 +105,9 @@ read_history_(Raw, Term, Options) :-
         Bindings = Bindings0
     ).
 
-i(_).
-
-%   list_history
-%   Write history events to the current output stream.
+%!  list_history
+%
+%   Write recorded history events using print_message/2.
 
 list_history :-
     (   '$history'(Last, _)

@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2022, University of Amsterdam
+    Copyright (c)  2011-2023, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -289,7 +289,7 @@ CpuTime(cputime_kind which)
 #define CPU_TIME_DONE
   struct tms t;
   double used;
-  static int MTOK_got_hz = FALSE;
+  static int MTOK_got_hz = false;
   static double MTOK_hz;
 
   if ( !MTOK_got_hz )
@@ -491,7 +491,7 @@ FreeMemory(void)
   { if ( limit.rlim_cur == RLIM_INFINITY )
       return (uintptr_t)-1;
     else
-      return limit.rlim_cur - used;
+      return (uintptr_t)(limit.rlim_cur - used);
   }
 #endif
 
@@ -559,7 +559,7 @@ _PL_Random(void)
 
   if ( !LD->os.rand_initialised )
   { setRandom(NULL);
-    LD->os.rand_initialised = TRUE;
+    LD->os.rand_initialised = true;
   }
 
 #ifdef HAVE_RANDOM
@@ -627,8 +627,9 @@ free_tmp_name(atom_t tname)
 
 
 static void
-free_tmp_symbol(void *name, void *value)
-{ (void)free_tmp_name((atom_t)name);
+free_tmp_symbol(table_key_t name, table_value_t value)
+{ (void)value;
+  (void)free_tmp_name((atom_t)name);
 }
 
 
@@ -702,7 +703,7 @@ verify_tmp_dir(const char* tmpdir)
 { const char *reason = NULL;
 
   if ( tmpdir == NULL )
-    return FALSE;
+    return false;
 
   if ( !ExistsDirectory(tmpdir) )
     reason = "no such directory";
@@ -713,10 +714,10 @@ verify_tmp_dir(const char* tmpdir)
 		      PL_CHARS, tmpdir,
 		      PL_CHARS, reason) )
     { /* to prevent ignoring return value warning */ }
-    return FALSE;
+    return false;
   }
 
-  return TRUE;
+  return true;
 }
 
 #ifdef O_XOS
@@ -802,14 +803,17 @@ retry:
 
   tname = PL_new_atom_mbchars(REP_FN, (size_t)-1, temp); /* locked: ok! */
 
-  PL_LOCK(L_OS);
   if ( !GD->os.tmp_files )
-  { GD->os.tmp_files = newHTable(4);
-    GD->os.tmp_files->free_symbol = free_tmp_symbol;
+  { PL_LOCK(L_OS);
+    if ( !GD->os.tmp_files )
+    { Table ht = newHTable(4);
+      ht->free_symbol = free_tmp_symbol;
+      GD->os.tmp_files = ht;
+    }
+    PL_UNLOCK(L_OS);
   }
-  PL_UNLOCK(L_OS);
 
-  addNewHTable(GD->os.tmp_files, (void*)tname, (void*)TRUE);
+  addNewHTable(GD->os.tmp_files, (table_key_t)tname, true);
 
   return tname;
 }
@@ -818,17 +822,13 @@ retry:
 int
 DeleteTemporaryFile(atom_t name)
 { GET_LD
-  int rc = FALSE;
+  int rc = false;
 
   if ( GD->os.tmp_files )
-  { PL_LOCK(L_OS);
-    if ( GD->os.tmp_files && GD->os.tmp_files->size > 0 )
-    { if ( lookupHTable(GD->os.tmp_files, (void*)name) )
-      { deleteHTable(GD->os.tmp_files, (void*)name);
+  { if ( GD->os.tmp_files )
+    { if ( deleteHTable(GD->os.tmp_files, (table_key_t)name) )
 	rc = free_tmp_name(name);
-      }
     }
-    PL_UNLOCK(L_OS);
   }
 
   return rc;
@@ -1158,7 +1158,7 @@ cleanupExpand(void)
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 verify_entry() verifies the path cache for this   path is still safe. If
-not it updates the cache and returns FALSE.
+not it updates the cache and returns false.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static int
@@ -1169,20 +1169,20 @@ verify_entry(CanonicalDir d)
   if ( statfunc(OsPath(d->canonical, tmp), &buf) == 0 )
   { if ( d->inode  == buf.st_ino &&
 	 d->device == buf.st_dev )
-      return TRUE;
+      return true;
 
     DEBUG(MSG_OS_DIR, Sdprintf("%s: inode/device changed\n", d->canonical));
 
     d->inode  = buf.st_ino;
     d->device = buf.st_dev;
-    return TRUE;
+    return true;
   } else
   { DEBUG(MSG_OS_DIR, Sdprintf("%s: no longer exists\n", d->canonical));
 
     deleteCanonicalDir(d);
   }
 
-  return FALSE;
+  return false;
 }
 
 
@@ -1299,8 +1299,13 @@ skipNetBIOSName(const char *s)
 }
 #endif
 
+/* Remove redundant /, ./, x/../, etc.   Note that this normally makes
+   the path shorter, except for Windows c:name/..., which must become
+   c:/name/...
+*/
+
 char *
-canonicaliseFileName(char *path)
+canonicaliseFileName(char *path, size_t buflen)
 { char *out = path, *in = path, *start = path;
   tmp_buffer saveb;
   int sl;
@@ -1308,6 +1313,15 @@ canonicaliseFileName(char *path)
 #ifdef O_HASDRIVES			/* C: */
   if ( in[1] == ':' && isLetter(in[0]) )
   { in += 2;
+
+    if ( in[0] != '/' )
+    { size_t len = strlen(in);
+      if ( len+4 > buflen )		/* 2+"/"+0 */
+	return PL_representation_error("max_path_length"),NULL;
+
+      memmove(in+1, in, len+1);
+      in[0] = '/';
+    }
 
     out = start = in;
   }
@@ -1467,7 +1481,7 @@ out:
 
 
 char *
-canonicalisePath(char *path)
+canonicalisePath(char *path, size_t buflen)
 { GET_LD
 
   if ( !truePrologFlag(PLFLAG_FILE_CASE) )
@@ -1479,7 +1493,8 @@ canonicalisePath(char *path)
     }
   }
 
-  canonicaliseFileName(path);
+  if ( !canonicaliseFileName(path, buflen) )
+    return NULL;
 
 #ifdef O_CANONICALISE_DIRS
 { char *e;
@@ -1653,7 +1668,7 @@ expandVars(const char *pattern, char *expanded, int maxlen)
 		   ATOM_max_path_length);
 	  return NULL;
 	}
-	*expanded++ = c;
+	*expanded++ = (char)c;
 
 	continue;
     }
@@ -1688,8 +1703,7 @@ IsAbsolutePath(const char *p)				/* /d:/ */
     succeed;
 #endif
 
-  if ( p[1] == ':' && isLetter(p[0]) &&			/* d:/ or d:\ */
-       (IS_DIR_SEPARATOR(p[2]) || p[2] == '\0') )
+  if ( p[1] == ':' && isLetter(p[0]) )		/* d: */
     succeed;
 
 #ifdef O_HASSHARES
@@ -1746,7 +1760,7 @@ IsAbsolutePath(const char *p)
 
 
 char *
-AbsoluteFile(const char *spec, char *path)
+AbsoluteFile(const char *spec, char *path, size_t buflen)
 { GET_LD
   char tmp[PATH_MAX];
   char buf[PATH_MAX];
@@ -1763,7 +1777,7 @@ AbsoluteFile(const char *spec, char *path)
   if ( IsAbsolutePath(file) )
   { strcpy(path, file);
 
-    return canonicalisePath(path);
+    return canonicalisePath(path, buflen);
   }
 
 #ifdef O_HASDRIVES
@@ -1775,7 +1789,7 @@ AbsoluteFile(const char *spec, char *path)
     path[0] = GetCurrentDriveLetter();
     path[1] = ':';
     strcpy(&path[2], file);
-    return canonicalisePath(path);
+    return canonicalisePath(path, buflen);
   }
 #endif /*O_HASDRIVES*/
 
@@ -1790,7 +1804,7 @@ AbsoluteFile(const char *spec, char *path)
 
   strcpy(&path[cwdlen], file);
 
-  return canonicalisePath(path);
+  return canonicalisePath(path, buflen);
 }
 
 
@@ -1832,13 +1846,13 @@ to be implemented directly.  What about other Unixes?
     { term_t tmp = PL_new_term_ref();
 
       PL_put_atom_chars(tmp, ".");
-      PL_error(NULL, 0, OsError(), ERR_FILE_OPERATION,
+      PL_error(NULL, 0, MSG_ERRNO, ERR_FILE_OPERATION,
 	       ATOM_getcwd, ATOM_directory, tmp);
 
       return NULL;
     }
 
-    if ( !canonicalisePath(buf) )
+    if ( !canonicalisePath(buf, sizeof(buf)) )
     { PL_representation_error("max_path_length");
       return NULL;
     }
@@ -1975,12 +1989,12 @@ ChDir(const char *path)
   OsPath(path, ospath);
 
   if ( path[0] == EOS || streq(path, ".") || is_cwd(path) )
-    return TRUE;
+    return true;
 
-  if ( !AbsoluteFile(path, tmp) )
-    return FALSE;
+  if ( !AbsoluteFile(path, tmp, sizeof(tmp)) )
+    return false;
   if ( is_cwd(tmp) )
-    return TRUE;
+    return true;
 
   if ( chdir(ospath) == 0 )
   { size_t len;
@@ -1997,10 +2011,10 @@ ChDir(const char *path)
     GD->paths.CWDdir = store_string(tmp);
     PL_UNLOCK(L_OS);
 
-    return TRUE;
+    return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 
@@ -2133,7 +2147,7 @@ PopTty(IOSTREAM *s, ttybuf *buf)
 
 int
 Sttymode(IOSTREAM *s)
-{ return true(s, SIO_RAW) ? TTY_RAW : TTY_COOKED;
+{ return ison(s, SIO_RAW) ? TTY_RAW : TTY_COOKED;
 }
 
 static void
@@ -2155,31 +2169,34 @@ ResetStdin(void)
 static ssize_t
 Sread_terminal(void *handle, char *buf, size_t size)
 { GET_LD
-  intptr_t h = (intptr_t)handle;
-  int fd = (int)h;
+  ssize_t rc;
   source_location oldsrc = LD->read_source;
 
-  if ( LD->prompt.next &&
-       false(Sinput, SIO_RAW) &&
-       true(Sinput, SIO_ISATTY) )
-    PL_write_prompt(TRUE);
-  else if ( true(Soutput, SIO_ISATTY) )
-    Sflush(Suser_output);
+  if ( Sinput->handle == handle )
+  { if ( LD->prompt.next &&
+	 isoff(Sinput, SIO_RAW) &&
+	 ison(Sinput, SIO_ISATTY) )
+      PL_write_prompt(true);
+    else if ( ison(Soutput, SIO_ISATTY) )
+      Sflush(Suser_output);
 
-  PL_dispatch(fd, PL_DISPATCH_WAIT);
-  size = (*GD->os.org_terminal.read)(handle, buf, size);
+    PL_dispatch(Sinput, PL_DISPATCH_WAIT);
+    rc = (*GD->os.org_terminal.read)(handle, buf, size);
 
-  if ( size == 0 )			/* end-of-file */
-  { if ( fd == 0 )
-    { Sclearerr(Suser_input);
-      LD->prompt.next = TRUE;
-    }
-  } else if ( size > 0 && buf[size-1] == '\n' )
-    LD->prompt.next = TRUE;
+    if ( rc == 0 )			/* end-of-file */
+    { if ( Sinput == Suser_input )
+      { Sclearerr(Suser_input);
+	LD->prompt.next = true;
+      }
+    } else if ( rc > 0 && buf[rc-1] == '\n' )
+      LD->prompt.next = true;
 
-  LD->read_source = oldsrc;
+    LD->read_source = oldsrc;
+  } else
+  { rc = (*GD->os.org_terminal.read)(handle, buf, size);
+  }
 
-  return size;
+  return rc;
 }
 
 void
@@ -2195,7 +2212,7 @@ ResetTty(void)
     Soutput->functions =
     Serror->functions  = &GD->os.iofunctions;
   }
-  LD->prompt.next = TRUE;
+  LD->prompt.next = true;
 }
 
 #ifdef O_HAVE_TERMIO			/* sys/termios.h or sys/termio.h */
@@ -2215,13 +2232,13 @@ GetTtyState(int fd, struct termios *tio)
 
 #ifdef HAVE_TCSETATTR
   if ( tcgetattr(fd, tio) )
-    return FALSE;
+    return false;
 #else
   if ( ioctl(fd, TIOCGETA, tio) )
-    return FALSE;
+    return false;
 #endif
 
-  return TRUE;
+  return true;
 }
 
 static int
@@ -2246,7 +2263,7 @@ SetTtyState(int fd, struct termios *tio)
   if ( fd == ttyfileno && ttytab.state )
     ttymodified = memcmp(&TTY_STATE(&ttytab), tio, sizeof(*tio));
 
-  return TRUE;
+  return true;
 }
 
 
@@ -2259,7 +2276,7 @@ PushTty(IOSTREAM *s, ttybuf *buf, int mode)
   buf->mode  = Sttymode(s);
   buf->state = NULL;
 
-  if ( false(s, SIO_ISATTY) )
+  if ( isoff(s, SIO_ISATTY) )
   { DEBUG(MSG_TTY, Sdprintf("stdin is not a terminal\n"));
     succeed;				/* not a terminal */
   }
@@ -2276,7 +2293,7 @@ PushTty(IOSTREAM *s, ttybuf *buf, int mode)
   buf->state = allocHeapOrHalt(sizeof(tty_state));
 
   if ( !GetTtyState(fd, &TTY_STATE(buf)) )
-    return FALSE;
+    return false;
 
   tio = TTY_STATE(buf);			/* structure copy */
 
@@ -2306,13 +2323,13 @@ PushTty(IOSTREAM *s, ttybuf *buf, int mode)
 
 /**
  * @param do_free is one of
- *   - FALSE: do not free the state
- *   - TRUE:  free the state
+ *   - false: do not free the state
+ *   - true:  free the state
  */
 
 bool
 PopTty(IOSTREAM *s, ttybuf *buf, int do_free)
-{ int rc = TRUE;
+{ int rc = true;
 
   Sset_ttymode(s, buf->mode);
 
@@ -2418,7 +2435,7 @@ PopTty(IOSTREAM *s, ttybuf *buf, int do_free)
 
   Sset_ttymode(s, buf->mode);
   if ( buf->mode != TTY_RAW )
-    LD->prompt.next = TRUE;
+    LD->prompt.next = true;
 
   succeed;
 }
@@ -2491,7 +2508,7 @@ int
 Setenv(char *name, char *value)
 {
 #ifdef HAVE_SETENV
-  if ( setenv(name, value, TRUE) != 0 )
+  if ( setenv(name, value, true) != 0 )
     return PL_error(NULL, 0, MSG_ERRNO, ERR_SYSCALL, "setenv");
 #else
   char *buf;
@@ -2755,7 +2772,7 @@ System(char *cmd)
 #endif
 
   if ( (pid = fork()) == -1 )
-  { return PL_error("shell", 2, OsError(), ERR_SYSCALL, "fork");
+  { return PL_error("shell", 2, MSG_ERRNO, ERR_SYSCALL, "fork");
   } else if ( pid == 0 )		/* The child */
   { char tmp[PATH_MAX];
     char *argv[4];
@@ -3095,9 +3112,9 @@ Pause(double t)
   { rc = nanosleep(&req, &req);
     if ( rc == -1 && errno == EINTR )
     { if ( PL_handle_signals() < 0 )
-	return FALSE;
+	return false;
     } else
-      return TRUE;
+      return true;
   }
 }
 
@@ -3110,11 +3127,11 @@ Pause(double t)
 int
 Pause(double t)
 { if ( t <= 0.0 )
-    return TRUE;
+    return true;
 
   usleep((unsigned long)(t * 1000000.0));
 
-  return TRUE;
+  return true;
 }
 
 #endif /*HAVE_USLEEP*/
@@ -3135,7 +3152,7 @@ Pause(double time)
     timeout.tv_usec = (long)(time * 1000000) % 1000000;
     select(1, NULL, NULL, NULL, &timeout);
 
-    return TRUE;
+    return true;
   } else
   { int rc;
     int left = (int)(time+0.5);
@@ -3144,9 +3161,9 @@ Pause(double time)
     { rc = sleep(left);
       if ( rc == -1 && errno == EINTR )
       { if ( PL_handle_signals() < 0 )
-	  return FALSE;
+	  return false;
 
-	return TRUE;
+	return true;
       }
       left -= rc;
     } while ( rc != 0 );
@@ -3161,11 +3178,11 @@ Pause(double time)
 int					/* a millisecond granualrity. */
 Pause(double time)			/* the EMX function sleep uses seconds */
 { if ( time <= 0.0 )			/* the select() trick does not work at all. */
-    return TRUE;
+    return true;
 
   DosSleep((ULONG)(time * 1000));
 
-  return TRUE;
+  return true;
 }
 
 #endif /*HAVE_DOSSLEEP*/
@@ -3192,7 +3209,7 @@ int
 Pause(double t)
 { delay((int)(t * 1000));
 
-  return TRUE;
+  return true;
 }
 
 #endif /*HAVE_DELAY*/

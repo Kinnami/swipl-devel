@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2023, University of Amsterdam
+    Copyright (c)  2011-2025, University of Amsterdam
 			      VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -50,24 +50,31 @@
 #endif
 #endif
 
-#ifdef __MINGW32__
+/* define SWIPL_WINDOWS_NATIVE_ACCESS to 1 if you want the native
+ * Windows types for Swinhandle() and Swinsock()
+ */
+
+#ifdef __WINDOWS__
+#if SWIPL_WINDOWS_NATIVE_ACCESS
 #include <winsock2.h>
 #include <windows.h>
 #endif
+#else  /*__WINDOWS__*/
+#include <unistd.h>
+#endif	/*__WINDOWS__*/
 
 #include <stdarg.h>
 #include <wchar.h>
 #include <stddef.h>
-#ifdef _MSC_VER
-typedef __int64 int64_t;
-#if (_MSC_VER < 1300)
-typedef long intptr_t;
-typedef unsigned long uintptr_t;
-#endif
-typedef intptr_t ssize_t;		/* signed version of size_t */
-#else
-#include <unistd.h>
 #include <inttypes.h>			/* more portable than stdint.h */
+
+#ifdef _MSC_VER
+typedef __int32 int32_t;
+typedef unsigned __int32 uint32_t;
+typedef __int64 int64_t;
+typedef unsigned __int64 uint64_t;
+typedef intptr_t ssize_t;
+typedef uintptr_t size_t;
 #endif
 
 #ifdef __cplusplus
@@ -88,13 +95,16 @@ stuff.
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #define HAVE_DECLSPEC
+#else
+#if !defined(HAVE_VISIBILITY_ATTRIBUTE) && (__GNUC__ >= 4 || defined(__clang__))
+#define HAVE_VISIBILITY_ATTRIBUTE 1
+#endif
 #endif
 
 #ifdef HAVE_DECLSPEC
 # ifdef PL_KERNEL
 #define PL_EXPORT(type)		__declspec(dllexport) extern type
 #define PL_EXPORT_DATA(type)	__declspec(dllexport) extern type
-#define install_t		void
 # else
 #  ifdef __BORLANDC__
 #define PL_EXPORT(type)		type _stdcall
@@ -118,7 +128,11 @@ stuff.
 #define PL_EXPORT(type)		extern type
 #define PL_EXPORT_DATA(type)	extern type
 # endif
+#ifdef HAVE_VISIBILITY_ATTRIBUTE
+#define install_t		__attribute__((visibility("default"))) void
+#else
 #define install_t		void
+#endif
 #endif /*HAVE_DECLSPEC*/
 #endif /*_PL_EXPORT_DONE*/
 
@@ -235,7 +249,9 @@ typedef struct io_stream
   void *		exception;	/* pending exception (record_t) */
   void *		context;	/* getStreamContext() */
   struct PL_locale *	locale;		/* Locale associated to stream */
-  intptr_t		reserved[4];	/* reserved for extension */
+  intptr_t		fileno;		/* File number if this is associated to a file */
+  uintptr_t		tty_size;	/* Size of terminal (2 shorts) */
+  intptr_t		reserved[2];	/* reserved for extension */
 } IOSTREAM;
 
 
@@ -274,6 +290,8 @@ typedef struct io_stream
 #define SIO_BOM		SmakeFlag(31)	/* BOM was detected/written */
 #define SIO_REPPLU	SmakeFlag(32)	/* Bad char --> Prolog \uXXXX */
 
+#define SIO_TRYLOCK	SIO_CLOSING     /* Used by PL_get_stream() */
+
 #define	SIO_SEEK_SET	0	/* From beginning of file.  */
 #define	SIO_SEEK_CUR	1	/* From current position.  */
 #define	SIO_SEEK_END	2	/* From end of file.  */
@@ -287,6 +305,11 @@ PL_EXPORT_DATA(int)		Slinesize;		/* Sgets() linesize */
 #else
 PL_EXPORT_DATA(IOSTREAM)	S__iob[3];		/* Libs standard streams */
 #endif
+
+/* WARNING: Sinput, Soutput, Serror use the OS's files directly.
+            If you wish to use Prolog's streams, use Suser_input,
+            Scurrent_output, etc. in SWI-Prolog.h
+*/
 
 #define Sinput  (&S__iob[0])		/* Stream Sinput */
 #define Soutput (&S__iob[1])		/* Stream Soutput */
@@ -314,6 +337,9 @@ PL_EXPORT_DATA(IOSTREAM)	S__iob[3];		/* Libs standard streams */
 #endif
 #define SIO_GETPENDING    (7)		/* get #pending bytes */
 #define SIO_GETREPOSITION (8)		/* Test if stream is repositionable */
+#ifdef __WINDOWS__
+#define SIO_GETWINHANDLE  (9)		/* Get underlying handle */
+#endif
 
 /* Sread_pending() */
 #define SIO_RP_BLOCK 0x1		/* wait for new input */
@@ -430,8 +456,10 @@ PL_EXPORT(int)		Ssetlocale(IOSTREAM *s,
 				   struct PL_locale **old_loc);
 PL_EXPORT(int)		Sflush(IOSTREAM *s);
 PL_EXPORT(int64_t)	Ssize(IOSTREAM *s);
-PL_EXPORT(int)		Sseek(IOSTREAM *s, long pos, int whence);
-PL_EXPORT(long)		Stell(IOSTREAM *s);
+PL_EXPORT(int)		Sseek(IOSTREAM *s, long pos, int whence); /* WDEPRECATED */ /* use Sseek64() */
+PL_EXPORT(long)		Stell(IOSTREAM *s); /* WDEPRECATED */ /* use Stell64() */
+PL_EXPORT(int)		Ssetttysize(IOSTREAM *s, short cols, short rows);
+PL_EXPORT(int)		Sgetttysize(IOSTREAM *s, short *cols, short *rows);
 PL_EXPORT(int)		Sclose(IOSTREAM *s);
 PL_EXPORT(int)		Sgcclose(IOSTREAM *s, int flags);
 PL_EXPORT(char *)	Sfgets(char *buf, int n, IOSTREAM *s);
@@ -462,7 +490,10 @@ PL_EXPORT(IOSTREAM *)	Sopen_file(const char *path, const char *how);
 PL_EXPORT(IOSTREAM *)	Sopen_iri_or_file(const char *path, const char *how);
 PL_EXPORT(IOSTREAM *)	Sfdopen(int fd, const char *type);
 PL_EXPORT(int)		Sfileno(IOSTREAM *s);
-#ifdef __WINDOWS__
+#if defined(__WINDOWS__) && SWIPL_WINDOWS_NATIVE_ACCESS
+PL_EXPORT(int)		Swin_open_osfhandle(HANDLE h, int flags);
+PL_EXPORT(IOSTREAM *)	Swin_open_handle(HANDLE h, const char *mode);
+PL_EXPORT(HANDLE)	Swinhandle(IOSTREAM *s);
 #if defined(_WINSOCKAPI_) || defined(NEEDS_SWINSOCK) /* have SOCKET */
 PL_EXPORT(SOCKET)	Swinsock(IOSTREAM *s);
 #endif

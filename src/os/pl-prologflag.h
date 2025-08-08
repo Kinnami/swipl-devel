@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2021, University of Amsterdam
+    Copyright (c)  2011-2024, University of Amsterdam
                               VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -43,17 +43,17 @@
 		 *    FUNCTION DECLARATIONS	*
 		 *******************************/
 
-void		setPrologFlag(const char *name, int flags, ...);
-int		set_prolog_flag(term_t key, term_t value, int flags);
-word		pl_prolog_flag(term_t key, term_t value, control_t h);
-word		pl_prolog_flag5(term_t key, term_t value,
-				term_t local, term_t access, term_t type,
-				control_t h);
+#define LDFUNC_DECLARATIONS
+void		setPrologFlag(const char *name, unsigned int flags, ...);
+int		set_prolog_flag(term_t key, term_t value, unsigned short flags);
+bool		PL_get_prolog_flag(atom_t name, term_t value);
 int		setDoubleQuotes(atom_t a, unsigned int *flagp);
 int		setBackQuotes(atom_t a, unsigned int *flagp);
 int		setRationalSyntax(atom_t a, unsigned int *flagp);
 void		initPrologFlags(void);
 void		setABIVersionPrologFlag(void);
 void		cleanupPrologFlags(void);
+int		checkPrologFlagsAccess(void);
+#undef LDFUNC_DECLARATIONS
 
 #endif /*_PL_PROLOGFLAG_H*/

@@ -2,8 +2,8 @@
 
     Author:        Jan Wielemaker
     E-mail:        jan@swi-prolog.org
-    WWW:           http://www.swi-prolog.org
-    Copyright (c)  2021-2023, SWI-Prolog Solutions b.v.
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2021-2025, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -43,6 +43,9 @@
 :- use_module(library(broadcast), [broadcast/1]).
 :- autoload(library(edinburgh), [debug/0]).
 :- autoload(library(gensym), [gensym/2]).
+
+:- multifile
+    trap_alias/2.
 
 :- set_prolog_flag(generate_debug_info, false).
 
@@ -149,34 +152,36 @@ pi_to_head(Name/Arity, Head) :-
 %
 %   Report current status of the debugger.
 
+:- '$hide'(debugging/0).
 debugging :-
-    '$notrace'(debugging_).
+    current_prolog_flag(debug, DebugMode),
+    '$notrace'(debugging_(DebugMode)).
 
-debugging_ :-
-    prolog:debug_control_hook(debugging),
+debugging_(DebugMode) :-
+    prolog:debug_control_hook(debugging(DebugMode)),
     !.
-debugging_ :-
-    (   current_prolog_flag(debug, true)
-    ->  print_message(informational, debugging(on)),
-        findall(H, spy_point(H), SpyPoints),
+debugging_(DebugMode) :-
+    print_message(informational, debugging(DebugMode)),
+    (   DebugMode == true
+    ->  findall(H, spy_point(H), SpyPoints),
         print_message(informational, spying(SpyPoints))
-    ;   print_message(informational, debugging(off))
+    ;   true
     ),
     trapping,
-    forall(debugging_hook, true).
+    forall(debugging_hook(DebugMode), true).
 
 spy_point(Module:Head) :-
     current_predicate(_, Module:Head),
     '$get_predicate_attribute'(Module:Head, spy, 1),
     \+ predicate_property(Module:Head, imported_from(_)).
 
-%!  debugging_hook
+%!  debugging_hook(+DebugMode)
 %
-%   Multifile hook that is called   as  forall(debugging_hook, true) and
-%   that may be used  to  extend   the  information  printed  from other
-%   debugging libraries.
+%   Multifile hook that is   called as forall(debugging_hook(DebugMode),
+%   true) and that may be used to   extend  the information printed from
+%   other debugging libraries.
 
-:- multifile debugging_hook/0.
+:- multifile debugging_hook/1.
 
 
 		 /*******************************
@@ -206,6 +211,15 @@ spy_point(Module:Head) :-
 %   ?- run.
 %   ```
 %
+%   The multifile hook trap_alias/2 allow for   defining short hands for
+%   commonly used traps.  Currently this defines
+%
+%     - det
+%       Trap determinism exceptions raised as a result of the det/1
+%       directive.
+%     - =>
+%       Trap rule existence error exceptions.
+%
 %   @see gtrap/1 to trap using the graphical debugger.
 %   @see _Edit exceptions_ menu in PceEmacs and the graphical debugger
 %   that provide a graphical frontend to trap exceptions.
@@ -217,23 +231,45 @@ spy_point(Module:Head) :-
 trap(Error) :-
     '$notrace'(trap_(Error)).
 
-trap_(Error) :-
+trap_(Spec) :-
+    expand_trap(Spec, Formal),
     gensym(ex, Rule),
-    asserta(exception(Rule, error(Error, _), true, true)),
-    print_message(informational, trap(Rule, error(Error, _), true, true)),
+    asserta(exception(Rule, error(Formal, _), true, true)),
+    print_message(informational, trap(Rule, error(Formal, _), true, true)),
     install_exception_hook,
     debug.
 
 notrap(Error) :-
     '$notrace'(notrap_(Error)).
 
-notrap_(Error) :-
-    Exception = error(Error, _),
+notrap_(Spec) :-
+    expand_trap(Spec, Formal),
+    Exception = error(Formal, _),
     findall(exception(Name, Exception, NotCaught, Caught),
-            retract(exception(Name, error(Error, _), Caught, NotCaught)),
+            retract(exception(Name, error(Formal, _), Caught, NotCaught)),
             Trapping),
     print_message(informational, notrap(Trapping)).
 
+expand_trap(Var, _Formal), var(Var) =>
+    true.
+expand_trap(Alias, Formal), trap_alias(Alias, For) =>
+    Formal = For.
+expand_trap(Explicit, Formal) =>
+    Formal = Explicit.
+
+%!  trap_alias(+Alias, -Error)
+%
+%   Define short hands for commonly used exceptions.
+
+trap_alias(det,                  determinism_error(_Pred, _Declared, _Observed, property)).
+trap_alias(=>,			 existence_error(rule, _)).
+trap_alias(existence_error,      existence_error(_,_)).
+trap_alias(type_error,           type_error(_,_)).
+trap_alias(domain_error,         domain_error(_,_)).
+trap_alias(permission_error,     permission_error(_,_,_)).
+trap_alias(representation_error, representation_error(_)).
+trap_alias(resource_error,       resource_error(_)).
+trap_alias(syntax_error,         syntax_error(_)).
 
 trapping :-
     findall(exception(Name, Term, NotCaught, Caught),
@@ -244,13 +280,14 @@ trapping :-
 :- dynamic   prolog:prolog_exception_hook/5.
 :- multifile prolog:prolog_exception_hook/5.
 
-%!  exception_hook(+ExIn, -ExOut, +Frame, +Catcher) is failure.
+%!  exception_hook(+ExIn, -ExOut, +Frame, +Catcher, +DebugMode) is
+%!                 failure.
 %
 %   Trap exceptions and consider whether or not to start the tracer.
 
 :- public exception_hook/5.
 
-exception_hook(Ex, Ex, _Frame, Catcher, _Debug) :-
+exception_hook(Ex, Ex, Frame, Catcher, _Debug) :-
     thread_self(Me),
     thread_property(Me, debug(true)),
     broadcast(debug(exception(Ex))),
@@ -261,8 +298,21 @@ exception_hook(Ex, Ex, _Frame, Catcher, _Debug) :-
     ;   Catcher == none,
         NotCaught == true
     ),
+    \+ direct_catch(Frame),
     trace, fail.
 
+%!  direct_catch(+Frame) is semidet.
+%
+%   True if we are dealing with a  catch(SytemPred, _, _), i.e., a catch
+%   directly wrapped around a call to  a   built-in.  In that case it is
+%   highly unlikely that we want the debugger to step in.
+
+direct_catch(Frame) :-
+    prolog_frame_attribute(Frame, parent, Parent),
+    prolog_frame_attribute(Parent, predicate_indicator, system:catch/3),
+    prolog_frame_attribute(Frame, Level, MyLevel),
+    prolog_frame_attribute(Parent, Level, CatchLevel),
+    MyLevel =:= CatchLevel+1.
 
 %!  install_exception_hook
 %

@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2003-2020, University of Amsterdam
+    Copyright (c)  2003-2024, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -40,7 +41,7 @@
           ]).
 :- autoload(library(apply),[maplist/2]).
 :- autoload(library(check),[list_undefined/0,list_void_declarations/0]).
-:- autoload(library(debug),[debug/3]).
+:- use_module(library(debug),[debug/3]).
 :- autoload(library(lists),[list_to_set/2,member/2]).
 :- autoload(library(option),[merge_options/3]).
 
@@ -80,7 +81,7 @@ make :-
     notrace(make_no_trace).
 
 make_no_trace :-
-    '$update_library_index',
+    '$update_library_index'([]),
     findall(File, modified_file(File), Reload0),
     list_to_set(Reload0, Reload),
     (   prolog:make_hook(before, Reload)

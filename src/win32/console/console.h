@@ -3,7 +3,8 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1999-2012, University of Amsterdam
+    Copyright (c)  1999-2025, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -51,6 +52,7 @@
 
 #include <signal.h>
 #include <stddef.h>
+#include <stdbool.h>
 #ifdef _MSC_VER
 #include <stdint.h>
 #pragma warning(disable : 4996)	/* deprecate open() etc */
@@ -62,7 +64,7 @@ typedef struct
 { int		 first;
   int		 last;
   int		 size;			/* size of the buffer */
-  TCHAR	        *buffer;		/* character buffer */
+  TCHAR		*buffer;		/* character buffer */
   int		 flags;			/* flags for the queue */
 } rlc_queue, *RlcQueue;
 
@@ -99,6 +101,7 @@ typedef void	(*RlcInterruptHook)(rlc_console, int); /* Hook for Control-C */
 typedef void	(*RlcResizeHook)(int, int); /* Hook for window change */
 typedef void	(*RlcMenuHook)(rlc_console, const TCHAR *id); /* Hook for menu-selection */
 typedef void	(*RlcFreeDataHook)(uintptr_t data); /* release data */
+typedef bool	(*RlcLinkHook)(rlc_console, const TCHAR *); /* link href */
 
 #ifdef __WINDOWS__			/* <windows.h> is included */
 					/* rlc_color(which, ...) */
@@ -109,7 +112,7 @@ typedef void	(*RlcFreeDataHook)(uintptr_t data); /* release data */
 
 _export HANDLE	rlc_hinstance(void);	/* hInstance of WinMain() */
 _export HWND	rlc_hwnd(rlc_console c); /* HWND of console window */
-_export int	rlc_window_pos(rlc_console c,
+_export bool	rlc_window_pos(rlc_console c,
 			       HWND hWndInsertAfter,
 			       int x, int y, int w, int h,
 			       UINT flags); /* resize/reposition window */
@@ -131,6 +134,7 @@ _export RlcRenderAllHook rlc_render_all_hook(RlcRenderAllHook renderallhook);
 _export RlcInterruptHook rlc_interrupt_hook(RlcInterruptHook interrupthook);
 _export RlcResizeHook	rlc_resize_hook(RlcResizeHook resizehook);
 _export RlcMenuHook	rlc_menu_hook(RlcMenuHook menuhook);
+_export RlcLinkHook	rlc_link_hook(RlcLinkHook linkhook);
 _export int		rlc_copy_output_to_debug_output(int docopy);
 
 _export rlc_console	rlc_create_console(rlc_console_attr *attr);
@@ -149,6 +153,8 @@ _export size_t		rlc_read(rlc_console c, TCHAR *buf, size_t cnt);
 _export size_t		rlc_write(rlc_console c, TCHAR *buf, size_t cnt);
 _export int		rlc_close(rlc_console c);
 _export int		rlc_flush_output(rlc_console c);
+
+_export wchar_t	       *rlc_clipboard_text(rlc_console c);
 
 _export int		getch(rlc_console c);
 _export int		getche(rlc_console c);
@@ -214,7 +220,7 @@ typedef struct _complete_data
   int		call_type;		/* COMPLETE_* */
   int		replace_from;		/* index to start replacement */
   int		quote;			/* closing quote */
-  int		case_insensitive;	/* if TRUE: insensitive match */
+  int		case_insensitive;	/* if true: insensitive match */
   TCHAR		candidate[COMPLETE_MAX_WORD_LEN];
   TCHAR		buf_handle[COMPLETE_MAX_WORD_LEN];
   RlcCompleteFunc function;		/* function for continuation */
@@ -228,7 +234,7 @@ _export TCHAR	*read_line(rlc_console console);
 _export int	rlc_complete_file_function(RlcCompleteData data);
 _export void	rlc_init_history(rlc_console c, int size);
 _export void	rlc_add_history(rlc_console c, const TCHAR *line);
-_export int	rlc_bind(int chr, const char *fname);
+_export bool	rlc_bind(int chr, const char *fname);
 _export int	rlc_for_history(
 		    rlc_console b,
 		    int (*handler)(void *ctx, int no, const TCHAR *line),

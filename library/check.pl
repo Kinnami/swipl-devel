@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2020, University of Amsterdam
+    Copyright (c)  1985-2023, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -64,7 +65,7 @@
 :- autoload(library(prolog_codewalk),
 	    [prolog_walk_code/1,prolog_program_clause/2]).
 :- autoload(library(prolog_format),[format_types/2]).
-
+:- autoload(library(predicate_options), [check_predicate_options/0]).
 
 :- set_prolog_flag(generate_debug_info, false).
 
@@ -101,11 +102,32 @@ predicates in `user' modules.
 %     * list_undefined/0 reports undefined predicates
 %     * list_trivial_fails/0 reports calls for which there is no
 %       matching clause.
+%     * list_format_errors/0 reports mismatches in format/2,3
+%       templates and the list of arguments.
 %     * list_redefined/0 reports predicates that have a local
 %       definition and a global definition.  Note that these are
-%       *not* errors.
+%       __not__ errors.
+%     * list_void_declarations/0 reports on predicates with defined
+%       properties, but no clauses.
 %     * list_autoload/0 lists predicates that will be defined at
 %       runtime using the autoloader.
+%     * check_predicate_options/0 tests for options passed to
+%       predicates such as open/4 that are unknown or are used
+%       with an invalid argument.
+%
+%    The checker can be expanded or  restricted by modifying the dynamic
+%    multifile hook checker/2.
+%
+%    The checker may be used in batch, e.g., for CI workflows by calling
+%    SWI-Prolog as below. Note that by using ``-l`` to load the program,
+%    the program is not started  if   it  used  initialization/2 of type
+%    `main` to start the program.
+%
+%
+%    ```
+%    swipl -q --on-warning=status --on-error=status \
+%          -g check -t halt -l myprogram.pl
+%    ```
 
 check :-
     checker(Checker, Message),
@@ -377,8 +399,12 @@ list_void_declarations :-
     P = _:_,
     (   predicate_property(P, undefined),
         (   '$get_predicate_attribute'(P, meta_predicate, Pattern),
-            print_message(warning,
-                          check(void_declaration(P, meta_predicate(Pattern))))
+            (   '$get_predicate_attribute'(P, transparent, 1)
+            ->   print_message(warning,
+                               check(void_declaration(P, meta_predicate(Pattern))))
+            ;    print_message(warning,
+                               check(void_declaration(P, mode(Pattern))))
+            )
         ;   void_attribute(Attr),
             '$get_predicate_attribute'(P, Attr, 1),
             print_message(warning,
@@ -847,12 +873,13 @@ valid_string_goal(codesio:format_to_codes(Format,_,_,_)) :- string(Format).
 %      retract(check:checker(list_redefined,_)).
 %      ```
 
-checker(list_undefined,         'undefined predicates').
-checker(list_trivial_fails,     'trivial failures').
-checker(list_format_errors,     'format/2,3 and debug/3 templates').
-checker(list_redefined,         'redefined system and global predicates').
-checker(list_void_declarations, 'predicates with declarations but without clauses').
-checker(list_autoload,          'predicates that need autoloading').
+checker(list_undefined,          'undefined predicates').
+checker(list_trivial_fails,      'trivial failures').
+checker(list_format_errors,      'format/2,3 and debug/3 templates').
+checker(list_redefined,          'redefined system and global predicates').
+checker(list_void_declarations,  'predicates with declarations but without clauses').
+checker(list_autoload,           'predicates that need autoloading').
+checker(check_predicate_options, 'predicate options lists').
 
 
                  /*******************************
@@ -925,7 +952,7 @@ prolog:message(check(Msg, Goal, Context)) -->
     check_message(Msg).
 prolog:message(check(void_declaration(P, Decl))) -->
     predicate(P),
-    [ ' is declared as ~p, but has no clauses'-[Decl] ].
+    [ ' is declared with ', ansi(code, '~p', [Decl]), ' but has no clauses' ].
 
 undefined_procedures([]) -->
     [].
@@ -964,14 +991,14 @@ predicate(Module:Name/Arity) -->
       predicate_name(Module:Head, PName)
     },
     !,
-    [ '~w'-[PName] ].
+    [ ansi(code, '~w', [PName]) ].
 predicate(Module:Head) -->
     { atom(Module),
       callable(Head),
       predicate_name(Module:Head, PName)
     },
     !,
-    [ '~w'-[PName] ].
+    [ ansi(code, '~w', [PName]) ].
 predicate(Name/Arity) -->
     { atom(Name),
       integer(Arity)

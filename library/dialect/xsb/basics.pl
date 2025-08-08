@@ -1,9 +1,9 @@
 /*  Part of SWI-Prolog
 
-    Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
-    WWW:           http://www.swi-prolog.org
-    Copyright (c)  2019-2023, CWI, Amsterdam
+    Author:        David Warren and Jan Wielemaker
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2019-2024, CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
     All rights reserved.
 
@@ -31,6 +31,10 @@
     LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
     ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
+
+    This module is based on the XSB ``basics.P`` module, licensed under
+    LGPLv2.  The SWI-Prolog port has been re-licensed under BSD-2 with
+    permission from David Warren, Sep 11, 2024.
 */
 
 :- module(basics,
@@ -43,6 +47,7 @@
 
             ground/1,
             copy_term/2,
+            copy_term_nat/2,
 
             log_ith/3, log_ith_bound/3, log_ith_new/3, log_ith_to_list/2,
             logk_ith/4,
@@ -57,11 +62,7 @@
 This module provides the XSB `basics`  module. The implementation either
 simply uses SWI-Prolog built-ins and libraries or is copied from the XSB
 file.
-
-@license LGPLv2
 */
-
-:- license(lgpl).
 
 %!  for(?I,+B1,+B2)
 %

@@ -1,36 +1,35 @@
 # Building SWI-Prolog using cmake
 
-As of version 7.7.20,  SWI-Prolog   ships  with `cmake` `CMakeLists.txt`
-configuration files that cover the  entire   project.
+SWI-Prolog moved to CMake for configuration   with  version 7.7.20. Soon
+thereafter support for GNU autoconf and GNU make has been dropped.
 
-The build has  been  tested  with   the  "Unix  Makefiles"  and  "Ninja"
-generators.  We  use  [Ninja](https://ninja-build.org/)   as  it  builds
-faster, avoids warning  from  being   cluttered  and  better facilitates
-debugging dependency issues. It can be   selected  using `cmake -G Ninja
-..`,  after which the usual `make` _target_   can be replaced by `ninja`
-_target_. The examples below all  use  Ninja.   Drop  `-G  Ninja` to use
-classical Unix make.
+The build has been tested with the  "Unix Makefiles", "Ninja" as well as
+"NMake Makefiles" or "Visual Studio  17   2022"  for  Windows when using
+VS2022.   Except   for   the    _Visual     Studio_    build,   we   use
+[Ninja](https://ninja-build.org/) as it builds   faster,  avoids warning
+from being cluttered and better facilitates debugging dependency issues.
+It can be selected using `cmake  -G   Ninja  ..`,  after which the usual
+`make` _target_ can be replaced by  `ninja` _target_. The examples below
+all use Ninja. Drop `-G Ninja` to use classical Unix make.
 
 ## Getting cmake
 
-Building SWI-Prolog requires cmake version 3.9  or later (*). Many Linux
+Building SWI-Prolog requires cmake version  3.10   or  later. Many Linux
 systems ship with a cmake package. On  MacOS we use the Macport version.
 If the shipped cmake version is too old   you may wish to download cmake
-from https://cmake.org/download/ On  Linux   systems,  installing  e.g.,
-cmake 3.12 (please pick the latest stable version) is as simple as:
-
-    wget https://cmake.org/files/v3.12/cmake-3.12.0-Linux-x86_64.sh
-    sudo sh cmake-3.12.0-Linux-x86_64.sh --prefix=/usr/local --exclude-subdir
-
-(*) The ODBC package requires 3.9.  For the rest 3.5 should suffice.
-
+from https://cmake.org/download/
 
 ## Native build
+
+The [build SWI-Prolog from source](https://www.swi-prolog.org/build/)
+page has information one how to get and build SWI-Prolog for various
+platforms. Check that page also for the prerequisites depending on the
+platform.
 
 ### Getting the source
 
 The   source   may   be    downloaded    as     a    tar    ball    from
-http://www.swi-prolog.org or downloaded using git.  The git sequence is:
+https://www.swi-prolog.org or downloaded using git. The git sequence is:
 
     git clone --recursive https://github.com/SWI-Prolog/swipl-devel.git
 
@@ -55,13 +54,10 @@ latest version:
     git pull
     git submodule update --init
     cd build
-    ninja
+    cmake ..
     ninja
     ctest -j 8
     ninja install
-
-Note that `ninja` is called twice.  Under some situations not everything
-is properly updated after the first run. This is a bug.
 
 If the build fails, one could try to remove the entire `build` directory
 and re-create it as  above.  Note  that   the  build  process  makes  no
@@ -95,37 +91,42 @@ allow for restricting the system, define   the  layout of the filesystem
 and libraries that are built.
 
   | Option                        | Description                           |
-  | ----------------------------- | ------------------------------------- |
-  | `-DMULTI_THREADED=OFF`        | Drop support for Prolog threads       |
-  | `-DUSE_SIGNALS=OFF`           | Drop signal support                   |
-  | `-DUSE_GMP=ON`                | Use GMP instead of bundled LibBF      |
-  | `-DUSE_TCMALLOC=OFF`          | Do not link against `-ltcmalloc`      |
-  | `-DVMI_FUNCTIONS=ON`          | Use functions for the VM instructions |
-  | `-DSWIPL_SHARED_LIB=OFF`      | Build Prolog kernel as static lib     |
-  | `-DSWIPL_STATIC_LIB=ON`       | Also build `libswipl_static.a`        |
-  | `-DSTATIC_EXTENSIONS=ON`      | Include packages into the main system |
-  | `-DSWIPL_INSTALL_IN_LIB=ON`   | Install libswipl.so in `<prefix>/lib` |
-  | `-DSWIPL_INSTALL_IN_SHARE=ON` | Install docs in `<prefix>/share`      |
-  | `-DSWIPL_M32=ON`              | Make 32-bit version on 64-bit Linux   |
-  | `-DSWIPL_PACKAGES=OFF`        | Only build the core system            |
-  | `-DSWIPL_PACKAGES_BASIC=OFF`  | Drop all basic packages               |
-  | `-DSWIPL_PACKAGES_ODBC=OFF`   | Drop ODBC and CQL packages            |
-  | `-DSWIPL_PACKAGES_JAVA=OFF`   | Drop JPL Java interface               |
-  | `-DSWIPL_PACKAGES_X=OFF`      | Drop graphics (xpce)                  |
-  | `-DSWIPL_PACKAGE_LIST=List`   | ;-separated list of packages          |
-  | `-DBUILD_TESTING=OFF`         | Do not setup for ctest unit tests     |
-  | `-DINSTALL_TESTS=ON`          | Add tests to installed system         |
-  | `-DINSTALL_DOCUMENTATION=OFF` | Drop generating the HTML docs         |
+  | ----------------------------- | -------------------------------------- |
+  | `-DMULTI_THREADED=OFF`        | Drop support for Prolog threads        |
+  | `-DENGINES=OFF`               | Drop support for Prolog engines        |
+  | `-DUSE_SIGNALS=OFF`           | Drop signal support                    |
+  | `-DUSE_GMP=OFF`               | Use bundled LibBF instead of GMP       |
+  | `-DUSE_TCMALLOC=OFF`          | Do not link against `-ltcmalloc`       |
+  | `-DVMI_FUNCTIONS=ON`          | Use functions for the VM instructions  |
+  | `-DSWIPL_SHARED_LIB=OFF`      | Build Prolog kernel as static lib      |
+  | `-DSWIPL_STATIC_LIB=ON`       | Also build `libswipl_static.a`         |
+  | `-DSTATIC_EXTENSIONS=ON`      | Include packages into the main system  |
+  | `-DSWIPL_INSTALL_IN_LIB=ON`   | Install libswipl.so in `<prefix>/lib`  |
+  | `-DSWIPL_INSTALL_IN_SHARE=ON` | Install docs in `<prefix>/share`       |
+  | `-DSWIPL_CC=<string>`         | Default for `c_cc` flag                |
+  | `-DSWIPL_CXX=<string>`        | Default for `c_cxx` flag               |
+  | `-DSWIPL_PACKAGES=OFF`        | Only build the core system             |
+  | `-DSWIPL_PACKAGES_BASIC=OFF`  | Drop all basic packages                |
+  | `-DSWIPL_PACKAGES_ODBC=OFF`   | Drop ODBC and CQL packages             |
+  | `-DSWIPL_PACKAGES_JAVA=OFF`   | Drop JPL Java interface                |
+  | `-DSWIPL_PACKAGES_GUI=OFF`    | Drop graphics (xpce)                   |
+  | `-DSWIPL_PACKAGE_LIST=List`   | ;-separated list of packages           |
+  | `-DBUILD_TESTING=OFF`         | Do not setup for ctest unit tests      |
+  | `-DINSTALL_TESTS=ON`          | Add tests to installed system          |
+  | `-DINSTALL_DOCUMENTATION=OFF` | Drop generating the HTML docs          |
+  | `-DINSTALL_QLF=ON`            | Compile and install library .qlf files |
+  | `-DINSTALL_PROLOG_SRC=OFF`    | Do not install library .pl files       |
 
 Note that packages for  which  the   prerequisites  cannot  be found are
 dropped automatically, as are packages  for   which  the sources are not
 installed.
 
-Note that many combinations of these options are not properly supported.
-You are strongly encouraged  to  install   the  full  system for desktop
-usage. When installing in lightweight and   server  environments one may
-drop  one  or  more  of  ``SWIPL_PACKAGES_X``,  ``SWIPL_PACKAGES_JAVA``,
-``SWIPL_PACKAGES_ODBC`` and ``INSTALL_DOCUMENTATION``.
+Note  that  many  combinations  of  these  options  are  not  properly
+supported.  You are strongly encouraged to install the full system for
+desktop usage. When installing  in lightweight and server environments
+one    may   drop    one    or    more   of    ``SWIPL_PACKAGES_GUI``,
+``SWIPL_PACKAGES_JAVA``,          ``SWIPL_PACKAGES_ODBC``          and
+``INSTALL_DOCUMENTATION``.
 
 A   specific   list   of    packages     can    be    requestion   using
 `DSWIPL_PACKAGE_LIST` set to a list of package.  The list is checked for
@@ -134,6 +135,47 @@ documentation should be disabled in this   scenario because including it
 includes many packages. For example:
 
     cmake -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGE_LIST="clib;plunit"
+
+### Customizing GUI fonts
+
+The        GUI        (xpce)         renders        fonts        using
+[Pango](https://www.gtk.org/docs/architecture/pango).   XPCE specifies
+its default  named fonts from  using abstract families  `mono`, `sans`
+and `serif`.   The mapping may be  specified by the user.   There is a
+default  mapping for  Windows, MacOS  and others  (Linux, *BSD,  ...).
+This mapping can be overruled using, e.g., the following CMake option:
+
+	-DSANS_FAMILY='"DejaVu Sans,sans"'
+
+Similarly,  there  are  the ``-DMONO_FAMILY``  and  ``-DSERIF_FAMILY``
+options.   Note that  the argument  is  a C  string that  needs to  be
+protected  against  the  shell.   A  font  specification  is  a  comma
+separated list of  font names that are processed in  order, i.e., if a
+character must be written it uses the first font that provides a glyph
+for this  character.  These CMake  options are primarily  intended for
+creating a port for a particular environment.
+
+
+## Finding requirements
+
+Finding  requirements  is   the   task    of   CMake.   Typically,   our
+`CMakeLists.txt`  files  call  `find_package(SomePackage,  ...)`,  which
+implies it loads `FindSomePackage.cmake`. As far  as possible we rely on
+the "finders" that come bundled with CMake.   Others can be found in the
+various `cmake` directories. These are either copied from other projects
+or home brewed. Please consult the   CMake documentation on the specific
+"finder" as well as `find_package()` if   you  have trouble finding some
+requirement or selecting the right version if you have multiple versions
+of the requirement installed on your system.
+
+In                            particular,                            see
+[FindPython.cmake](https://cmake.org/cmake/help/latest/module/FindPython.html)
+to control the Python version used by the Janus interface to Python. For
+example, if you want to use  a   particular  Python library (for example
+from   a   (`conda`)   environment),   you     can    use   the   option
+`-DPython_LIBRARY:FILEPATH=/path/to/your/library`                    and
+`-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE` to make sure   the library is
+found also at runtime.
 
 
 ## Embedding SWI-Prolog in Java, C, C++, etc.
@@ -146,8 +188,8 @@ platform).  The following environment variables are commonly used:
 - `SWI_HOME_DIR` should point at SWI-Prolog's main directory, e.g.
   ``${CMAKE_INSTALL_PREFIX}/lib/swipl``
 - The shared object search path should include the directory where
-  `libswipl.{so,dll,...}` resides.  The variable depends on the
-  platform.  Some popular names:
+  `libswipl.{so,dll,...}` resides.  The variable depends on the platform.
+  Some popular names:
 
   - `LD_LIBRARY_PATH` (ELF based systems such as Linux)
   - `DYLD_LIBRARY_PATH` (MacOS)
@@ -189,37 +231,13 @@ perform the process on your host Linux system.
 
 ### WASM (Emscripten)
 
-Install  [Emscripten](https://emscripten.org/),  download    and   build
-[zlib](https://zlib.net/) using Emscripten. Now you can build the system
-using the commands below (assume initial working  dir is the root of the
-source tree).
+See https://www.swi-prolog.org/build/WebAssembly.html for details.
 
-    mkdir build.wasm
-    cd build.wasm
-    source ~/emsdk/emsdk_env.sh
-    cmake -DCMAKE_TOOLCHAIN_FILE=$EMSCRIPTEN/cmake/Modules/Platform/Emscripten.cmake \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DZLIB_LIBRARY=$HOME/zlib-1.2.12/libz.a \
-          -DZLIB_INCLUDE_DIR=$HOME/zlib-1.2.12 \
-	  -DGMP_ROOT=$HOME/wasm \
-          -DINSTALL_DOCUMENTATION=OFF \
-          -G Ninja ..
-
-For   latest   news   on   the    WASM     version    see    the   [Wiki
+For   latest    news   on   the    WASM   version   see    the   [Wiki
 page](https://swi-prolog.discourse.group/t/swi-prolog-in-the-browser-using-wasm).
-This page also discusses how to use the WASM version with Node.js and in
+This page also discusses how to  use the WASM version with Node.js and in
 a browser.
 
-
-### Building a 32-bit version on 64-bit Debian based Linux
-
-Building the 32-bit version on  a  64   bit  platform  can be useful for
-testing and creating  32-bit  .qlf  files   or  saved  states.  A fairly
-complete system is created using the configuration command below.
-
-    cmake -DSWIPL_M32=ON \
-          -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_QT=OFF \
-          -G Ninja ..
 
 ### Cross-building for targets without an emulator
 
@@ -232,13 +250,13 @@ steps:
 
   - Build a native Prolog system in a directory, say `native`.  This
     version must have the same _word-size_ (32 or 64-bits) as the
-    cross-compiled target.  One the core Prolog system (no packages)
-    is required and the system only needs to be build, i.e., the
-    _install_ step is allowed but not needed.  See above.
+    cross-compiled target.  One the core Prolog system (no packages) is
+    required and the system only needs to be build, i.e., the _install_
+    step is allowed but not needed.  See above.
 
   - Specify `-DSWIPL_NATIVE_FRIEND=native` for the cross-compilation.
-    This will cause the above system to be used for the cross
-    compilation steps.
+    This will cause the above system to be used for the cross compilation
+    steps.
 
 ## Development
 
@@ -247,12 +265,18 @@ in the cmake _build_ directory. If possible,   the files from the source
 tree that do not need modification are   created  as _symbolic links_ to
 the real sources. This  implies  that  `src/swipl`   can  be  used  as a
 complete development environment and library   and system predicates can
-be edited using edit/1 and friends.
+be edited using edit/1 and  friends.   Note  that current cmake supports
+``-DCMAKE_INSTALL_MODE=ABS_SYMLINK``,  installing  the    system   using
+symbolic links to provide  a  similar   result.  The  advantage of using
+``-DCMAKE_INSTALL_MODE=ABS_SYMLINK`` is that all files are in the target
+position while this is  not  the  case   when  running  from  the  build
+directory. The disadvantage is that  ``ninja   install``  must  still be
+executed on changes such as adding new files to the library.
 
 The script `scripts/swi-activate` may be used   to  create symlinks from
-$HOME/bin to the version in the  current   working  directory. It may be
-used to activate the system  in  the   build  directory  or  where it is
-installed. It is called from the build directory as one of:
+`$HOME/bin` to the version in the  current   working  directory. It may
+be used to activate the system  in  the   build  directory  or  where it
+is installed. It is called from the build directory as one of:
 
     ../scripts/swipl-activate
     ../scripts/swipl-activate --installed
@@ -278,6 +302,47 @@ achieved using the target `core`, which   builds `swipl`, `libswipl` and
 
     ninja core
 
+Note that when using the `swi-activate` script, any system-wide version
+installed (e.g., from a Linux distribution) may be occluded, since the
+symbolic link created at `$HOME/bin/` will have precedence over, e.g.,
+`/usr/bin/swipl`. Delete the created symbolic link if you would like to
+come back to the distribution-based installed version.
+
+### Multiple configurations using scripts/configure
+
+As building in a subdirectory does not  modify the sources, you may have
+multiple  build  directories  holding   built    systems   in  different
+configurations. Each of these may be executed using `src/swipl` from the
+build directory. This is supported   by  the script `scripts/configure`.
+This script is executed in a  clean   build  directory. It assembles the
+command line options and environment for   running  `cmake` and building
+the system based on the name of the build directory. The general name of
+the build directory is as below, where   each _feat_ enables or disables
+some feature or aspect of the  build.   Check  the script for recognised
+features.
+
+    build.feat1-feat2-...
+
+For example, to build  a  system  using   the  `clang`  C  compiler with
+AddressSanitizer, use
+
+    mkdir build.clang.asan
+    cd build.clang.asan
+    ../script/configure
+    (direnv allow)
+    ninja
+
+The script writes a  script  `configure`   to  the  build directory that
+allows you to inspect or re-run   the  configuration and, if environment
+variables are required, a file  `.envrc`   for  the  `direnv` utility to
+manage the environment when running a shell in the build directory.
+
+A typical set of versions for development is
+
+  - `build` for a clean default Release build
+  - `build.pgo` for a PGO optimized Release build
+  - `build.debug` for a Debug build
+  - `build.asan` for using AddressSanitizer (see below)
 
 ### Testing
 
@@ -300,7 +365,7 @@ file and calling the entry point  as   illustrated.  The  entry point is
 always the base  name  of  the   file  (without  directory  and  without
 extension).
 
-    % src/swipl ../src/Tests/core/test_arith.pl
+    % src/swipl ../tests/core/test_arith.pl
     ?- test_arith.
     % PL-Unit: div ... done
     ...
@@ -366,23 +431,24 @@ And, for the 32-bit version:
     cpack
 
 
-### Debian based Linux systems (.deb or .rpm)
+### Debian based Linux systems (`.deb` or `.rpm`)
 
-The following commands create  `swipl-<version>-<nr>.<cpu>.deb/rpm` file
-with  SWI-Prolog  to  be  installed  in  /usr.  The  process  creates  a
-monolithic installer for a particular configuration of SWI-Prolog.  This
-is  *not*  what is typically used to create packages for  distributions.
-Distro package maintainers are referred to  _Modular packages for Linux_
-below.  The procedure here is intended to create  custom Debian packages
-for in-house deployment.
+The  following  commands  create  `swipl-<version>-<nr>.<cpu>.deb/rpm`
+file with SWI-Prolog to be installed in `/usr`.  The process creates a
+monolithic  installer for  a particular  configuration of  SWI-Prolog.
+This  is  *not*  what  is   typically  used  to  create  packages  for
+distributions.  Distro  package maintainers  are referred  to _Modular
+packages for Linux_  below.  The procedure here is  intended to create
+custom packages for in-house deployment.
 
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -G Ninja ..
+    cmake -DCMAKE_BUILD_TYPE=PGO -DCMAKE_INSTALL_PREFIX=/usr -G Ninja ..
     ninja
-    cpack -G DEB
+    cpack
 
-for generating an RPM, use  `cpack  -G   RPM`.  The  cmake configure run
-selects a default packager depending on  the availability of the package
-installer `apt` (assuming DEB) or `dnf` (assuming RPM).
+The `cmake` configure run selects  a default packager depending on the
+availability of  the package installer  `apt` (assuming DEB)  or `dnf`
+(assuming RPM).  The packager can  be selected explicitly using `cpack
+-G DEB` or `cpack -G RPM`
 
 
 #### Modular packages for Linux
@@ -414,6 +480,7 @@ The defined components are:
   | Perl_regex           | PCRE2 library binding                |
   | YAML_support         | Libyaml binding                      |
   | Java_interface       | Java interface (JPL)                 |
+  | Python_interface     | Python interface (Janus)             |
   | OpenSSL_interface    | Binding to OpenSSL/LibreSSL          |
   | TIPC_networking      | Linux TIPC network support           |
   | Qt_console           | Qt windowed interface                |
@@ -432,8 +499,11 @@ generate the Ubuntu PPA releases.
 
 ## Issues
 
-- Provide a FindSWIPL.cmake?
-- Problem compiling SWI when another SWI is installed already and you
+- Problem compiling SWIPL when another SWIPL is installed already and you
   have environment variables set to facilitate e.g., embedding in Java.
   The variable names and possibly conflicting values depend on the OS.
-  See [issue](https://github.com/SWI-Prolog/swipl-devel/issues/435)
+  See [issue](https://github.com/SWI-Prolog/swipl-devel/issues/435).
+- Potential problems when having multiple parallel installations of SWIPL
+  (e.g., distribution-based, build, manually installed), and environment
+  variables `SWI_HOME_DIR` or `SWIPL` set to specific SWIPL's home
+  directory. Read above.

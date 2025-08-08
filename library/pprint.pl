@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2014-2022, University of Amsterdam
+    Copyright (c)  2014-2024, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
@@ -41,6 +41,7 @@
 :- autoload(library(option),
             [merge_options/3, select_option/3, select_option/4,
              option/2, option/3]).
+:- autoload(library(error), [must_be/2]).
 
 /** <module> Pretty Print Prolog terms
 
@@ -65,8 +66,11 @@ etc.
                        left_margin(integer),
                        tab_width(integer),
                        indent_arguments(integer),
+                       auto_indent_arguments(integer),
                        operators(boolean),
-                       write_options(list)
+                       write_options(list),
+                       fullstop(boolean),
+                       nl(boolean)
                      ]).
 
 %!  print_term(+Term, +Options) is det.
@@ -88,20 +92,29 @@ etc.
 %     - indent_arguments(+Spec)
 %       Defines how arguments of compound terms are placed.  Defined
 %       values are:
-%       $ `false` :
-%       Simply place them left to right (no line-breaks)
-%       $ `true` :
-%       Place them vertically, aligned with the open bracket (not
-%       implemented)
-%       $ `auto` (default) :
-%       As horizontal if line-width is not exceeded, vertical
-%       otherwise.
-%       $ An integer :
-%       Place them vertically aligned, <N> spaces to the right of
-%       the beginning of the head.
+%       - `false` <br>
+%          Simply place them left to right (no line-breaks)
+%       - `true` <br>
+%          Place them vertically, aligned with the open bracket (not
+%          implemented)
+%       - `auto` (default) <br>
+%         As horizontal if line-width is not exceeded, vertical
+%         otherwise.  See also auto_indent_arguments(Int)
+%       - An integer <br>
+%         Place them vertically aligned, <N> spaces to the right of
+%         the beginning of the head.
+%     - auto_indent_arguments(+Integer)
+%       Used by indent_arguments(auto) to decide whether to introduce
+%       a newline after the `(` or not.  If specified and > 0, this
+%       provides the default integer for indent_arguments(Int).  The
+%       "hanging" mode is used if otherwise the indentation increment
+%       is twice this value.
 %     - operators(+Boolean)
-%       This is the inverse of the write_term/3 option `ignore_ops`.
-%       Default is to respect them.
+%       Deprecated.  This is the inverse of the write_term/3 option
+%       `ignore_ops`. Default is to respect them. If either `operators`
+%       or the `ignore_ops` in `write_options` is specified, both are
+%       consistently set. If both are specified, the `ignore_ops`
+%       options in the `write_options` is respected.
 %     - write_options(+List)
 %       List of options passed to write_term/3 for terms that are
 %       not further processed.  Default:
@@ -118,14 +131,28 @@ etc.
 %       If `true` (default `false`), add a newline to the output.
 
 print_term(Term, Options) :-
+    combine_options(Options, Options1),
+    \+ \+ print_term_2(Term, Options1).
+
+combine_options(Options0, Options) :-
     defaults(Defs0),
     select_option(write_options(WrtDefs), Defs0, Defs),
-    select_option(write_options(WrtUser), Options, Options1, []),
-    merge_options(WrtUser, WrtDefs, WrtOpts),
+    select_option(write_options(WrtUser), Options0, Options1, []),
+    (   option(ignore_ops(_), WrtUser)
+    ->  WrtUser1 = WrtUser
+    ;   option(operators(Ops), Options0)
+    ->  must_be(boolean, Ops),
+        neg(Ops, IgnoreOps),
+        WrtUser1 = [ignore_ops(IgnoreOps)|WrtUser]
+    ;   WrtUser1 = WrtUser
+    ),
+    merge_options(WrtUser1, WrtDefs, WrtOpts),
     merge_options(Options1, Defs, Options2),
     Options3 = [write_options(WrtOpts)|Options2],
-    default_margin(Options3, Options4),
-    \+ \+ print_term_2(Term, Options4).
+    default_margin(Options3, Options).
+
+neg(true, false).
+neg(false, true).
 
 print_term_2(Term, Options) :-
     prepare_term(Term, Template, Cycles, Constraints),
@@ -204,7 +231,7 @@ bind_non_cycles([H|T0], I, [H|T]) :-
 defaults([ output(user_output),
            depth(0),
            indent_arguments(auto),
-           operators(true),
+           auto_indent_arguments(4),
            write_options([ quoted(true),
                            numbervars(true),
                            portray(true),
@@ -321,17 +348,8 @@ pp(Dict, Ctx, Options) :-
         option(right_margin(RM), Options),
         Indent + Width < RM         % fits on a line, simply write
     ->  pprint(Dict, Ctx, Options)
-    ;   format(atom(Buf2), '~q{ ', [Tag]),
-        write(Out, Buf2),
-        atom_length(Buf2, FunctorIndent),
-        (   integer(IndentStyle)
-        ->  Nindent is Indent + IndentStyle,
-            (   FunctorIndent > IndentStyle
-            ->  indent(Out, Nindent, Options)
-            ;   true
-            )
-        ;   Nindent is Indent + FunctorIndent
-        ),
+    ;   option(write_options(WrtOpts), Options),
+        compound_indent(Out, '~W{ '-[Tag,WrtOpts], Indent, Nindent, Options),
         context(Ctx, depth, Depth),
         NDepth is Depth + 1,
         modify_context(Ctx, [indent=Nindent, depth=NDepth], NCtx0),
@@ -346,7 +364,8 @@ pp(Term, Ctx, Options) :-               % handle operators
     compound_name_arity(Term, Name, Arity),
     current_op(Prec, Type, Name),
     match_op(Type, Arity, Kind, Prec, Left, Right),
-    option(operators(true), Options),
+    option(write_options(WrtOptions), Options, []),
+    option(ignore_ops(false), WrtOptions, false),
     !,
     quoted_op(Name, QName),
     option(output(Out), Options),
@@ -431,7 +450,8 @@ pp(Term, Ctx, Options) :-               % handle operators
             ;   modify_context(Ctx2, [priority=Left], Ctx3),
                 pp(Arg1, Ctx3, Options),
                 format(Out, '~w~w~w', [Space,QName,Space]),
-                modify_context(Ctx2, [priority=Right], Ctx4),
+                line_position(Out, NIndent),
+                modify_context(Ctx2, [priority=Right, indent=NIndent], Ctx4),
                 pp(Arg2, Ctx4, Options)
             )
         ;   (   ToWide == true,
@@ -441,7 +461,7 @@ pp(Term, Ctx, Options) :-               % handle operators
                 format(Out, '( ', []),
                 NIndent is Indent + 2,
                 modify_context(Ctx2,
-                           [space=Space, indent=NIndent, priority=Pri],
+                               [space=Space, indent=NIndent, priority=Pri],
                                Ctx3),
                 pp_infix_list(List, QName, 0, Ctx3, Options),
                 indent(Out, Indent, Options),
@@ -469,17 +489,8 @@ pp(Term, Ctx, Options) :-               % compound
         Indent + Width < RM         % fits on a line, simply write
     ->  pprint(Term, Ctx, Options)
     ;   compound_name_arguments(Term, Name, Args),
-        format(atom(Buf2), '~q(', [Name]),
-        write(Out, Buf2),
-        atom_length(Buf2, FunctorIndent),
-        (   integer(IndentStyle)
-        ->  Nindent is Indent + IndentStyle,
-            (   FunctorIndent > IndentStyle
-            ->  indent(Out, Nindent, Options)
-            ;   true
-            )
-        ;   Nindent is Indent + FunctorIndent
-        ),
+        option(write_options(WrtOpts), Options),
+        compound_indent(Out, '~W('-[Name,WrtOpts], Indent, Nindent, Options),
         context(Ctx, depth, Depth),
         NDepth is Depth + 1,
         modify_context(Ctx,
@@ -488,6 +499,27 @@ pp(Term, Ctx, Options) :-               % compound
         dec_depth(NCtx0, NCtx),
         pp_compound_args(Args, NCtx, Options),
         write(Out, ')')
+    ).
+
+compound_indent(Out, Format-Args, Indent, Nindent, Options) :-
+    option(indent_arguments(IndentStyle), Options),
+    format(string(Buf2), Format, Args),
+    write(Out, Buf2),
+    atom_length(Buf2, FunctorIndent),
+    (   IndentStyle == auto,
+        option(auto_indent_arguments(IndentArgs), Options),
+        IndentArgs > 0,
+        FunctorIndent > IndentArgs*2
+    ->  true
+    ;   IndentArgs = IndentStyle
+    ),
+    (   integer(IndentArgs)
+    ->  Nindent is Indent + IndentArgs,
+        (   FunctorIndent > IndentArgs
+        ->  indent(Out, Nindent, Options)
+        ;   true
+        )
+    ;   Nindent is Indent + FunctorIndent
     ).
 
 
@@ -596,7 +628,7 @@ pp_dict_args([Name-Value|T], Ctx, Options) :-
     option(output(Out), Options),
     line_position(Out, Pos0),
     pp(Name, Ctx, Options),
-    write(Out, ':'),
+    write(Out, ': '),
     line_position(Out, Pos1),
     context(Ctx, indent, Indent),
     Indent2 is Indent + Pos1-Pos0,
@@ -812,11 +844,27 @@ end_type(S, Type, Options) :-
 end_type(S, Type, Options) :-
     Options.side == left,
     !,
+    left_type(S, Type).
+end_type(S, Type, _) :-
+    right_type(S, Type).
+
+left_type(S, Type), atom(S) =>
+    sub_atom(S, 0, 1, _, Start),
+    syntax_type(Start, Type).
+left_type(S, Type), string(S) =>
     sub_string(S, 0, 1, _, Start),
     syntax_type(Start, Type).
-end_type(S, Type, _) :-
+left_type(S, Type), blob(S, _) =>
+    syntax_type("<", Type).
+
+right_type(S, Type), atom(S) =>
+    sub_atom(S, _, 1, 0, End),
+    syntax_type(End, Type).
+right_type(S, Type), string(S) =>
     sub_string(S, _, 1, 0, End),
     syntax_type(End, Type).
+right_type(S, Type), blob(S, _) =>
+    syntax_type(")", Type).
 
 syntax_type("\"", quote(double)) :- !.
 syntax_type("\'", quote(single)) :- !.
@@ -845,6 +893,7 @@ is_solo('!').
 
 primitive(Term, Type) :- var(Term),      !, Type = 'pl-avar'.
 primitive(Term, Type) :- atom(Term),     !, Type = 'pl-atom'.
+primitive(Term, Type) :- blob(Term,_),   !, Type = 'pl-blob'.
 primitive(Term, Type) :- string(Term),   !, Type = 'pl-string'.
 primitive(Term, Type) :- integer(Term),  !, Type = 'pl-int'.
 primitive(Term, Type) :- rational(Term), !, Type = 'pl-rational'.

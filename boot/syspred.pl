@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2022, University of Amsterdam
+    Copyright (c)  1985-2025, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
@@ -77,7 +77,6 @@
             rule/3,                             % :Head, -Rule, ?Ref
             numbervars/3,                       % +Term, +Start, -End
             term_string/3,                      % ?Term, ?String, +Options
-            nb_setval/2,                        % +Var, +Value
             thread_create/2,                    % :Goal, -Id
             thread_join/1,                      % +Id
             sig_block/1,                        % :Pattern
@@ -245,8 +244,8 @@ atom_prefix(Atom, Prefix) :-
 %   if the canonical name  as   defined  by  absolute_file_name/2 is
 %   known as a loaded filename.
 %
-%   Note that Time = 0.0 is used by  PlDoc and other code that needs
-%   to create a file record without being interested in the time.
+%   Note that Time = 0 is used by PlDoc and other code that needs to
+%   create a file record without being interested in the time.
 
 source_file(File) :-
     (   current_prolog_flag(access_level, user)
@@ -260,7 +259,7 @@ source_file(File) :-
         ), !
     ;   '$time_source_file'(File, Time, Level)
     ),
-    Time > 0.0.
+    float(Time).
 
 %!  source_file(+Head, -File) is semidet.
 %!  source_file(?Head, ?File) is nondet.
@@ -274,8 +273,7 @@ source_file(M:Head, File) :-
     !,
     (   '$c_current_predicate'(_, M:Head),
         predicate_property(M:Head, multifile)
-    ->  multi_source_files(M:Head, Files),
-        '$member'(File, Files)
+    ->  multi_source_file(M:Head, File)
     ;   '$source_file'(M:Head, File)
     ).
 source_file(M:Head, File) :-
@@ -286,18 +284,15 @@ source_file(M:Head, File) :-
     '$source_file_predicates'(File, Predicates),
     '$member'(M:Head, Predicates).
 
-:- thread_local found_src_file/1.
-
-multi_source_files(Head, Files) :-
-    call_cleanup(
-        findall(File, multi_source_file(Head, File), Files),
-        retractall(found_src_file(_))).
-
 multi_source_file(Head, File) :-
+    State = state([]),
     nth_clause(Head, _, Clause),
     clause_property(Clause, source(File)),
-    \+ found_src_file(File),
-    asserta(found_src_file(File)).
+    arg(1, State, Found),
+    (   memberchk(File, Found)
+    ->  fail
+    ;   nb_linkarg(1, State, [File|Found])
+    ).
 
 
 %!  source_file_property(?File, ?Property) is nondet.
@@ -333,8 +328,8 @@ property_source_file(module(M), File) :-
     ;   '$current_module'(M, File)
     ).
 property_source_file(load_context(Module, Location, Options), File) :-
-    '$time_source_file'(File, _, user),
     clause(system:'$load_context_module'(File, Module, Options), true, Ref),
+    '$time_source_file'(File, _, user),
     (   clause_property(Ref, file(FromFile)),
         clause_property(Ref, line_count(FromLine))
     ->  Location = FromFile:FromLine
@@ -372,11 +367,12 @@ canonical_source_file(Spec, File) :-
     File = Spec.
 canonical_source_file(Spec, File) :-
     absolute_file_name(Spec, File,
-                       [ file_type(prolog),
-                         access(read),
+                       [ file_type(source),
+                         solutions(all),
                          file_errors(fail)
                        ]),
-    source_file(File).
+    source_file(File),
+    !.
 
 
 %!  exists_source(+Source) is semidet.
@@ -477,49 +473,6 @@ unload_file(File) :-
 
 :- if(current_prolog_flag(open_shared_object, true)).
 
-                 /*******************************
-                 *            DLOPEN            *
-                 *******************************/
-
-%!  open_shared_object(+File, -Handle) is det.
-%!  open_shared_object(+File, -Handle, +Flags) is det.
-%
-%   Open a shared object or DLL file. Flags  is a list of flags. The
-%   following flags are recognised. Note   however  that these flags
-%   may have no affect on the target platform.
-%
-%       * =now=
-%       Resolve all symbols in the file now instead of lazily.
-%       * =global=
-%       Make new symbols globally known.
-
-open_shared_object(File, Handle) :-
-    open_shared_object(File, Handle, []). % use pl-load.c defaults
-
-open_shared_object(File, Handle, Flags) :-
-    (   is_list(Flags)
-    ->  true
-    ;   throw(error(type_error(list, Flags), _))
-    ),
-    map_dlflags(Flags, Mask),
-    '$open_shared_object'(File, Handle, Mask).
-
-dlopen_flag(now,        2'01).          % see pl-load.c for these constants
-dlopen_flag(global,     2'10).          % Solaris only
-
-map_dlflags([], 0).
-map_dlflags([F|T], M) :-
-    map_dlflags(T, M0),
-    (   dlopen_flag(F, I)
-    ->  true
-    ;   throw(error(domain_error(dlopen_flag, F), _))
-    ),
-    M is M0 \/ I.
-
-:- export(open_shared_object/2).
-:- export(open_shared_object/3).
-
-
 		 /*******************************
 		 *      FOREIGN LIBRARIES	*
 		 *******************************/
@@ -556,9 +509,9 @@ use_foreign_library_noi(FileSpec) :-
     ensure_shlib,
     shlib:load_foreign_library(FileSpec).
 
-use_foreign_library(FileSpec, Entry) :-
+use_foreign_library(FileSpec, Options) :-
     ensure_shlib,
-    initialization(shlib:load_foreign_library(FileSpec, Entry), now).
+    initialization(shlib:load_foreign_library(FileSpec, Options), now).
 
 ensure_shlib :-
     '$get_predicate_attribute'(shlib:load_foreign_library(_), defined, 1),
@@ -874,6 +827,10 @@ define_or_generate(Pred) :-
 '$predicate_property'(transparent, Pred) :-
     '$get_predicate_attribute'(Pred, transparent, 1).
 '$predicate_property'(meta_predicate(Pattern), Pred) :-
+    '$get_predicate_attribute'(Pred, transparent, 1),
+    '$get_predicate_attribute'(Pred, meta_predicate, Pattern).
+'$predicate_property'(mode(Pattern), Pred) :-
+    '$get_predicate_attribute'(Pred, transparent, 0),
     '$get_predicate_attribute'(Pred, meta_predicate, Pattern).
 '$predicate_property'(file(File), Pred) :-
     '$get_predicate_attribute'(Pred, file, File).
@@ -924,6 +881,8 @@ define_or_generate(Pred) :-
     '$get_predicate_attribute'(Pred, abstract, N).
 '$predicate_property'(size(Bytes), Pred) :-
     '$get_predicate_attribute'(Pred, size, Bytes).
+'$predicate_property'(primary_index(Arg), Pred) :-
+    '$get_predicate_attribute'(Pred, primary_index, Arg).
 
 system_undefined(user:prolog_trace_interception/4).
 system_undefined(prolog:prolog_exception_hook/5).
@@ -1455,19 +1414,6 @@ term_string(Term, String, Options) :-
     format(string(String), '~W', [Term, Options1]).
 
 
-                 /*******************************
-                 *             GVAR             *
-                 *******************************/
-
-%!  nb_setval(+Name, +Value) is det.
-%
-%   Bind the non-backtrackable variable Name with a copy of Value
-
-nb_setval(Name, Value) :-
-    duplicate_term(Value, Copy),
-    nb_linkval(Name, Copy).
-
-
 		 /*******************************
 		 *            THREADS		*
 		 *******************************/
@@ -1534,8 +1480,7 @@ unblock([H|T], P, List) :-
 
 signal_is_blocked(Head) :-
     nb_current('$sig_blocked', List),
-    '$member'(Head, List),
-    !.
+    memberchk(Head, List).
 
 %!  set_prolog_gc_thread(+Status)
 %
@@ -1556,6 +1501,9 @@ set_prolog_gc_thread(Status) :-
     var(Status),
     !,
     '$instantiation_error'(Status).
+set_prolog_gc_thread(_) :-
+    \+ current_prolog_flag(threads, true),
+    !.
 set_prolog_gc_thread(false) :-
     !,
     set_prolog_flag(gc_thread, false),
@@ -1618,7 +1566,10 @@ undo(Goal) :-
 
 '$run_undo'([One]) :-
     !,
-    call(One).
+    (   call(One)
+    ->  true
+    ;   true
+    ).
 '$run_undo'(List) :-
     run_undo(List, _, Error),
     (   var(Error)
@@ -1638,13 +1589,13 @@ run_undo([H|T], E0, E) :-
     run_undo(T, E2, E).
 
 
-%!  '$wrap_predicate'(:Head, +Name, -Closure, -Wrapped, +Body) is det.
+%!  '$wrap_predicate'(:Head, +Name, -Closure, -Wrapped, :Body) is det.
 %
 %   Would be nicer to have this   from library(prolog_wrap), but we need
 %   it for tabling, so it must be a system predicate.
 
 :- meta_predicate
-    '$wrap_predicate'(:, +, -, -, +).
+    '$wrap_predicate'(:, +, -, -, 0).
 
 '$wrap_predicate'(M:Head, WName, Closure, call(Wrapped), Body) :-
     callable_name_arguments(Head, PName, Args),
@@ -1654,10 +1605,14 @@ run_undo([H|T], E0, E) :-
     ;   '$domain_error'(most_general_term, Head)
     ),
     atomic_list_concat(['$wrap$', PName], WrapName),
-    volatile(M:WrapName/Arity),
-    module_transparent(M:WrapName/Arity),
+    PI = M:WrapName/Arity,
+    dynamic(PI),
+    '$notransact'(PI),
+    volatile(PI),
+    module_transparent(PI),
     WHead =.. [WrapName|Args],
-    '$c_wrap_predicate'(M:Head, WName, Closure, Wrapped, M:(WHead :- Body)).
+    wrapped_clause(M, WHead, Body, Clause),
+    '$c_wrap_predicate'(M:Head, WName, Closure, Wrapped, Clause).
 
 callable_name_arguments(Head, PName, Args) :-
     atom(Head),
@@ -1674,3 +1629,6 @@ callable_name_arity(Head, PName, Arity) :-
     Arity = 0.
 callable_name_arity(Head, PName, Arity) :-
     compound_name_arity(Head, PName, Arity).
+
+wrapped_clause(M, WHead, M:Body, M:(WHead :- Body)) :- !.
+wrapped_clause(M, WHead, MB:Body, M:(WHead :- MB:Body)).

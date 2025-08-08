@@ -66,6 +66,7 @@
     "_PL_get_tail",
     "_PL_get_nil",
     "_PL_skip_list",
+    "_PL_prompt_string",
     "_PL_put_variable",
     "_PL_put_atom",
     "_PL_put_bool",
@@ -202,11 +203,26 @@
     "_PL_new_term_refs",
     "_PL_copy_term_ref",
     "_PL_reset_term_refs",
+    "_PL_query_engine",
+    "_PL_query_arguments",
+    "_PL_set_query_data",
+    "_PL_query_data",
+    "_PL_current_engine",
+    "_PL_create_engine",
+    "_PL_destroy_engine",
+    "__PL_switch_engine",
+    "__PL_reset_engine",
+    "_PL_set_trace_action",
+    "_PL_get_trace_context",
 
     "_WASM_ttymode",
+    "_WASM_bind_standard_streams",
     "_WASM_yield_request",
     "_WASM_set_yield_result",
     "_WASM_variable_id",
     "_js_unify_obj",
-    "_js_get_obj"
+    "_js_get_obj",
+
+    "_free",
+    "_malloc"
 ]

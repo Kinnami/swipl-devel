@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1995-2022, University of Amsterdam
+    Copyright (c)  1995-2024, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
@@ -37,14 +37,14 @@
 
 :- module(shlib,
           [ load_foreign_library/1,     % :LibFile
-            load_foreign_library/2,     % :LibFile, +InstallFunc
+            load_foreign_library/2,     % :LibFile, +Options
             unload_foreign_library/1,   % +LibFile
             unload_foreign_library/2,   % +LibFile, +UninstallFunc
             current_foreign_library/2,  % ?LibFile, ?Public
             reload_foreign_libraries/0,
                                         % Directives
             use_foreign_library/1,      % :LibFile
-            use_foreign_library/2       % :LibFile, +InstallFunc
+            use_foreign_library/2       % :LibFile, +Options
           ]).
 :- if(current_predicate(win_add_dll_directory/2)).
 :- export(win_add_dll_directory/1).
@@ -63,51 +63,68 @@ describe the procedure for using a foreign  resource (DLL in Windows and
 shared object in Unix) called =mylib=.
 
 First, one must  assemble  the  resource   and  make  it  compatible  to
-SWI-Prolog. The details for this vary between platforms. The swipl-ld(1)
-utility can be used to deal with this  in a portable manner. The typical
-commandline is:
+SWI-Prolog.  The  details  for   this    vary   between  platforms.  The
+``swipl-ld(1)`` utility can be used to  deal   with  this  in a portable
+manner. The typical commandline is:
 
-        ==
-        swipl-ld -o mylib file.{c,o,cc,C} ...
-        ==
+```
+swipl-ld -shared -o mylib file.{c,o,cc,C} ...
+```
 
 Make  sure  that  one  of   the    files   provides  a  global  function
-=|install_mylib()|=  that  initialises  the  module    using   calls  to
-PL_register_foreign(). Here is a  simple   example  file  mylib.c, which
-creates a Windows MessageBox:
+``install_mylib()``  that  initialises  the  module    using   calls  to
+PL_register_foreign(). Below is a simple example file ``mylib.c``, which
+prints a "hello" message. Note that we use SWI-Prolog's Sprintf() rather
+than  C  standard  printf()  to  print    the  outout  through  Prolog's
+`current_output`  stream,  making  the  example    work  in  a  windowed
+environment. The standard C printf() works in a console environment, but
+this bypasses Prolog's output redirection.  Also   note  the  use of the
+standard C ``bool`` type, which is supported  in 9.2.x and more actively
+promoted in the 9.3.x development series.
 
-    ==
-    #include <windows.h>
-    #include <SWI-Prolog.h>
+```
+#include <SWI-Prolog.h>
+#include <SWI-Stream.h>
+#include <stdbool.h>
 
-    static foreign_t
-    pl_say_hello(term_t to)
-    { char *a;
+static foreign_t
+pl_say_hello(term_t to)
+{ char *s;
 
-      if ( PL_get_atom_chars(to, &a) )
-      { MessageBox(NULL, a, "DLL test", MB_OK|MB_TASKMODAL);
+  if ( PL_get_chars(to, &s, CVT_ALL|REP_UTF8) )
+  { Sprintf("hello %Us", s);
 
-        PL_succeed;
-      }
+    return true;
+  }
 
-      PL_fail;
-    }
+  return false;
+}
 
-    install_t
-    install_mylib()
-    { PL_register_foreign("say_hello", 1, pl_say_hello, 0);
-    }
-    ==
+install_t
+install_mylib(void)
+{ PL_register_foreign("say_hello", 1, pl_say_hello, 0);
+}
+```
 
 Now write a file mylib.pl:
 
-    ==
-    :- module(mylib, [ say_hello/1 ]).
-    :- use_foreign_library(foreign(mylib)).
-    ==
+```
+:- module(mylib, [ say_hello/1 ]).
+:- use_foreign_library(foreign(mylib)).
+```
 
 The file mylib.pl can be loaded as a normal Prolog file and provides the
-predicate defined in C.
+predicate defined in C. The generated   ``mylib.so`` (or ``.dll``, etc.)
+must be placed in a directory searched  for using the Prolog search path
+`foreign` (see absolute_file_name/3). To  load   this  from  the current
+directory, we can use the ``-p alias=dir`` option:
+
+```
+swipl -p foreign=. mylib.pl
+?- say_hello(world).
+hello world
+true.
+```
 */
 
 :- meta_predicate
@@ -126,6 +143,11 @@ predicate defined in C.
     foreign_predicate/2,
     current_library/5.
 
+:- '$notransact'((loading/1,
+                  error/2,
+                  foreign_predicate/2,
+                  current_library/5)).
+
 :- (   current_prolog_flag(open_shared_object, true)
    ->  true
    ;   print_message(warning, shlib(not_supported)) % error?
@@ -140,7 +162,7 @@ predicate defined in C.
 
 
 %!  use_foreign_library(+FileSpec) is det.
-%!  use_foreign_library(+FileSpec, +Entry:atom) is det.
+%!  use_foreign_library(+FileSpec, +Options:list) is det.
 %
 %   Load and install a foreign   library as load_foreign_library/1,2 and
 %   register the installation using  initialization/2   with  the option
@@ -346,45 +368,54 @@ entry(_, default(Function), Function).
                  *******************************/
 
 %!  load_foreign_library(:FileSpec) is det.
-%!  load_foreign_library(:FileSpec, +Entry:atom) is det.
+%!  load_foreign_library(:FileSpec, +Options:list) is det.
 %
-%   Load a _|shared object|_  or  _DLL_.   After  loading  the Entry
-%   function is called without arguments. The default entry function
-%   is composed from =install_=,  followed   by  the file base-name.
-%   E.g.,    the    load-call    below      calls    the    function
-%   =|install_mylib()|=. If the platform   prefixes extern functions
-%   with =_=, this prefix is added before calling.
+%   Load a _|shared object|_ or _DLL_.  After loading the Entry function
+%   is called without arguments. The default  entry function is composed
+%   from =install_=, followed by the file base-name. E.g., the load-call
+%   below  calls  the  function  =|install_mylib()|=.  If  the  platform
+%   prefixes extern functions with =_=,  this   prefix  is  added before
+%   calling. Options provided are below.  Other   options  are passed to
+%   open_shared_object/3.
 %
-%     ==
-%           ...
-%           load_foreign_library(foreign(mylib)),
-%           ...
-%     ==
+%     - install(+Function)
+%       Installation function to use.  Default is default(install),
+%       which derives the function from FileSpec.
 %
-%   @param  FileSpec is a specification for absolute_file_name/3.  If searching
-%           the file fails, the plain name is passed to the OS to try the default
-%           method of the OS for locating foreign objects.  The default definition
-%           of file_search_path/2 searches <prolog home>/lib/<arch> on Unix and
-%           <prolog home>/bin on Windows.
+%   ```
+%       ...
+%       load_foreign_library(foreign(mylib)),
+%       ...
+%   ```
 %
-%   @see    use_foreign_library/1,2 are intended for use in directives.
+%   @arg  FileSpec is a specification for absolute_file_name/3.  If searching
+%         the file fails, the plain name is passed to the OS to try the default
+%         method of the OS for locating foreign objects.  The default definition
+%         of file_search_path/2 searches <prolog home>/lib/<arch> on Unix and
+%         <prolog home>/bin on Windows.
+%
+%   @see  use_foreign_library/1,2 are intended for use in directives.
 
 load_foreign_library(Library) :-
-    load_foreign_library(Library, default(install)).
+    load_foreign_library(Library, []).
 
-load_foreign_library(Module:LibFile, Entry) :-
+load_foreign_library(Module:LibFile, InstallOrOptions) :-
+    (   is_list(InstallOrOptions)
+    ->  Options = InstallOrOptions
+    ;   Options = [install(InstallOrOptions)]
+    ),
     with_mutex('$foreign',
-               load_foreign_library(LibFile, Module, Entry)).
+               load_foreign_library(LibFile, Module, Options)).
 
 load_foreign_library(LibFile, _Module, _) :-
     current_library(LibFile, _, _, _, _),
     !.
-load_foreign_library(LibFile, Module, DefEntry) :-
+load_foreign_library(LibFile, Module, Options) :-
     retractall(error(_, _)),
     find_library(LibFile, Path, Delete),
     asserta(loading(LibFile)),
     retractall(foreign_predicate(LibFile, _)),
-    catch(Module:open_shared_object(Path, Handle), E, true),
+    catch(Module:open_shared_object(Path, Handle, Options), E, true),
     (   nonvar(E)
     ->  delete_foreign_lib(Delete, Path),
         assert(error(Path, E)),
@@ -392,6 +423,7 @@ load_foreign_library(LibFile, Module, DefEntry) :-
     ;   delete_foreign_lib(Delete, Path)
     ),
     !,
+    '$option'(install(DefEntry), Options, default(install)),
     (   entry(LibFile, DefEntry, Entry),
         Module:call_shared_object_function(Handle, Entry)
     ->  retractall(loading(LibFile)),
@@ -570,22 +602,52 @@ win_add_dll_directory(Dir) :-
     atomic_list_concat([Path0, OSDir], ';', Path),
     setenv('PATH', Path).
 
-% Under MSYS2, the program is invoked from a bash, with the dll
-% dependencies (zlib1.dll etc.) in %MINGW_PREFIX%/bin instead of
-% the installation directory). Here we add this folder to the dll
-% search path.
+% Environments such as MSYS2 and  CONDA   install  DLLs in some separate
+% directory. We add these directories to   the  search path for indirect
+% dependencies from ours foreign plugins.
 
-add_mingw_dll_directory :-
+add_dll_directories :-
     current_prolog_flag(msys2, true),
     !,
-    getenv('MINGW_PREFIX', Prefix),
-    atomic_list_concat([Prefix, bin], /, Bin),
-    win_add_dll_directory(Bin).
+    env_add_dll_dir('MINGW_PREFIX', '/bin').
+add_dll_directories :-
+    current_prolog_flag(conda, true),
+    !,
+    env_add_dll_dir('CONDA_PREFIX', '/Library/bin'),
+    ignore(env_add_dll_dir('PREFIX', '/Library/bin')).
+add_dll_directories.
 
-add_mingw_dll_directory.
+env_add_dll_dir(Var, Postfix) :-
+    getenv(Var, Prefix),
+    atom_concat(Prefix, Postfix, Dir),
+    win_add_dll_directory(Dir).
 
-:- initialization(add_mingw_dll_directory).
+:- initialization
+    add_dll_directories.
 
+:- endif.
+
+		 /*******************************
+		 *          SEARCH PATH		*
+		 *******************************/
+
+:- dynamic
+    user:file_search_path/2.
+:- multifile
+    user:file_search_path/2.
+
+:- if((current_prolog_flag(apple, true),
+       current_prolog_flag(bundle, true))).
+user:file_search_path(foreign, swi('../../PlugIns/swipl')).
+:- elif(current_prolog_flag(apple_universal_binary, true)).
+user:file_search_path(foreign, swi('lib/fat-darwin')).
+:- elif((current_prolog_flag(windows, true),
+	 current_prolog_flag(bundle, true))).
+user:file_search_path(foreign, swi(bin)).
+:- else.
+user:file_search_path(foreign, swi(ArchLib)) :-
+    current_prolog_flag(arch, Arch),
+    atom_concat('lib/', Arch, ArchLib).
 :- endif.
 
                  /*******************************

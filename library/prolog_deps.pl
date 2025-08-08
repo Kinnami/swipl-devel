@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2020, VU University Amsterdam
-                         CWI, Amsterdam
+    Copyright (c)  2020-2025, VU University Amsterdam
+                              CWI, Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -37,9 +38,9 @@
           [ file_autoload_directives/3,      % +File, -Directives, +Options
             file_auto_import/2               % +File, +Options
           ]).
-:- use_module(library(apply), [convlist/3, maplist/3]).
+:- use_module(library(apply), [convlist/3, maplist/3, exclude/3]).
 :- use_module(library(filesex), [copy_file/2]).
-:- use_module(library(lists), [select/3, subtract/3, append/3, member/2]).
+:- use_module(library(lists), [select/3, append/3, member/2]).
 :- use_module(library(option), [option/2, option/3]).
 :- use_module(library(pairs), [group_pairs_by_key/2]).
 :- use_module(library(pprint), [print_term/2]).
@@ -56,7 +57,8 @@
                 xref_module/2,
                 xref_called/4,
                 xref_defined/3,
-                xref_built_in/1
+                xref_built_in/1,
+                xref_public_list/3
               ]).
 :- use_module(library(readutil), [read_file_to_string/3]).
 :- use_module(library(solution_sequences), [distinct/2]).
@@ -116,11 +118,13 @@ user:file_search_path(noautoload, library(pce(prolog/lib))).
 
 file_autoload_directives(File, Directives, Options) :-
     xref_source(File),
-    findall(Head, distinct(Head, undefined(File, Head, Options)), Missing),
-    convlist(missing_autoload(File), Missing, Pairs),
+    findall(Head, distinct(Head, undefined(File, Head, Options)), Missing0),
+    clean_missing(Missing0, Missing),
+    option(update(Old), Options, []),
+    convlist(missing_autoload(File, Old), Missing, Pairs),
     keysort(Pairs, Pairs1),
     group_pairs_by_key(Pairs1, Grouped),
-    directives(Grouped, Directives, Options).
+    directives(File, Grouped, Directives, Options).
 
 %!  undefined(+File, -Callable, +Options)
 %
@@ -216,69 +220,114 @@ defined(File, Callable) :-
     xref_defined(File, Callable, How),
     How \= imported(_).
 
+%!  clean_missing(+Missing0, -Missing) is det.
+%
+%   Hack to deal with library(main) and library(optparse) issues.
+%
+%   @tbd Needs a more fundamental solution.
+
+clean_missing(Missing0, Missing) :-
+    memberchk(main, Missing0),
+    memberchk(argv_options(_,_,_), Missing0),
+    !,
+    exclude(argv_option_hook, Missing0, Missing).
+clean_missing(Missing, Missing).
+
+argv_option_hook(opt_type(_,_,_)).
+argv_option_hook(opt_help(_,_)).
+argv_option_hook(opt_meta(_,_)).
+
 
 		 /*******************************
 		 *       GENERATE OUTPUT	*
 		 *******************************/
 
-missing_autoload(Src, Head, From-Head) :-
+missing_autoload(Src, _, Head, From-Head) :-
     xref_defined(Src, Head, imported(From)),
     !.
-missing_autoload(_Src, Head, File-Head) :-
+missing_autoload(Src, Directives, Head, File-Head) :-
+    src_file(Src, SrcFile),
+    member(:-(Dir), Directives),
+    directive_file(Dir, FileSpec),
+    absolute_file_name(FileSpec, File,
+                       [ file_type(prolog),
+                         file_errors(fail),
+                         relative_to(SrcFile),
+                         access(read)
+                       ]),
+    xref_public_list(File, SrcFile, [exports(Exports)]),
+    member(PI, Exports),
+    is_pi(PI),
+    pi_head(PI, Head),
+    !.
+missing_autoload(_Src, _, Head, File-Head) :-
     predicate_property(Head, autoload(File0)),
     !,
-    (   absolute_file_name(File0, File,
+    (   absolute_file_name(File0, File1,
                            [ access(read),
                              file_type(prolog),
                              file_errors(fail)
                            ])
-    ->  true
+    ->  qlf_pl_file(File1, File)
     ;   File = File0
     ).
-missing_autoload(_Src, Head, File-Head) :-
+missing_autoload(_Src, _, Head, File-Head) :-
     noautoload(Head, File),
     !.
-missing_autoload(_Src, Head, _) :-
+missing_autoload(_Src, _, Head, _) :-
     pi_head(PI, Head),
     print_message(warning,
                   error(existence_error(procedure, PI), _)),
     fail.
 
-%!  directives(+FileAndHeads, -Directives, +Options) is det.
+:- if(exists_source(library(pce))).
+:- autoload(library(pce), [get/3]).
+src_file(@(Ref), File) =>
+    get(?(@(Ref), file), absolute_path, File).
+:- endif.
+src_file(File0, File) =>
+    File = File0.
+
+%!  directives(+File, +FileAndHeads, -Directives, +Options) is det.
 %
 %   Assemble the final set of directives. Uses the option update(Old).
 
-directives(FileAndHeads, Directives, Options) :-
+directives(File, FileAndHeads, Directives, Options) :-
     option(update(Old), Options, []),
-    phrase(update_directives(Old, FileAndHeads, RestDeps), Directives, Rest),
+    phrase(update_directives(Old, FileAndHeads, RestDeps, File),
+           Directives, Rest),
     update_style(Old, Options, Options1),
     maplist(directive(Options1), RestDeps, Rest0),
     sort(Rest0, Rest).
 
-update_directives([], Deps, Deps) -->
+update_directives([], Deps, Deps, _) -->
     [].
-update_directives([:-(H)|T], Deps0, Deps) -->
-    { update_directive(H, Deps0, Deps1, Directive) },
+update_directives([:-(H)|T], Deps0, Deps, File) -->
+    { update_directive(File, H, Deps0, Deps1, Directive) },
     !,
     [ :-(Directive) ],
-    update_directives(T, Deps1, Deps).
-update_directives([H|T], Deps0, Deps) -->
+    update_directives(T, Deps1, Deps, File).
+update_directives([H|T], Deps0, Deps, File) -->
     [ H ],
-    update_directives(T, Deps0, Deps).
+    update_directives(T, Deps0, Deps, File).
 
-update_directive(Dir0, Deps0, Deps, Dir) :-
+update_directive(Src, Dir0, Deps0, Deps, Dir) :-
+    src_file(Src, SrcFile),
     directive_file(Dir0, FileSpec),
     absolute_file_name(FileSpec, File,
                        [ file_type(prolog),
                          file_errors(fail),
+                         relative_to(SrcFile),
                          access(read)
                        ]),
+    qlf_pl_file(File, PlFile),
     select(DepFile-Heads, Deps0, Deps),
-    same_dep_file(DepFile, File),
+    same_dep_file(DepFile, PlFile),
     !,
     (   Dir0 =.. [Pred,File0,Imports]
-    ->  maplist(pi_head, PIs, Heads),
-        subtract(PIs, Imports, New),
+    ->  xref_public_list(PlFile, SrcFile, [exports(Exports)]),
+        maplist(head_pi(Exports), Heads, PIs),
+        subtract_pis(PIs, Imports, New),
         append(Imports, New, NewImports),
         Dir =.. [Pred,File0,NewImports]
     ;   Dir = Dir0
@@ -288,6 +337,14 @@ directive_file(use_module(File),   File).
 directive_file(use_module(File,_), File).
 directive_file(autoload(File),     File).
 directive_file(autoload(File,_),   File).
+
+qlf_pl_file(File, PlFile) :-
+    file_name_extension(_Base, Ext, File),
+    user:prolog_file_type(Ext, qlf),
+    !,
+    '$qlf_module'(File, Info),
+    PlFile = Info.get(file).
+qlf_pl_file(File, File).
 
 same_dep_file(File, File) :-
     !.
@@ -300,6 +357,51 @@ same_dep_file(Dep, File) :-
     file_name_extension(Dep, Ext, DepFile),
     same_file(DepFile, File),
     !.
+
+is_pi(Name/Arity), atom(Name), integer(Arity) => true.
+is_pi(Name//Arity), atom(Name), integer(Arity) => true.
+is_pi(_) => fail.
+
+%!  head_pi(+Exports, +Head, -PI) is det.
+
+head_pi(PIs, Head, PI) :-
+    head_pi(Head, PI),
+    memberchk(PI, PIs),
+    !.
+head_pi(_PIs, Head, PI) :-
+    pi_head(PI, Head).
+
+head_pi(Head, PI) :-
+    pi_head(PI0, Head),
+    (   PI = PI0
+    ;   dcg_pi(PI0, PI)
+    ).
+
+dcg_pi(Module:Name/Arity, PI), integer(Arity), Arity >= 2 =>
+    DCGArity is Arity - 2,
+    PI = Module:Name//DCGArity.
+dcg_pi(Name/Arity, PI), integer(Arity), Arity >= 2 =>
+    DCGArity is Arity - 2,
+    PI = Name//DCGArity.
+dcg_pi(_/Arity, _), integer(Arity) =>
+    fail.
+
+%!  subtract_pis(+Set, +Delete, -Result) is det.
+
+subtract_pis([], _, R) =>
+    R = [].
+subtract_pis([H|T], D, R) =>
+    (   member(E, D),
+        same_pi(H, E)
+    ->  subtract_pis(T, D, R)
+    ;   R = [H|R1],
+        subtract_pis(T, D, R1)
+    ).
+
+same_pi(PI, PI) => true.
+same_pi(Name/A1, Name//A2) => A1 =:= A2+2.
+same_pi(Name//A1, Name/A2) => A1 =:= A2-2.
+same_pi(_,_) => fail.
 
 
 %!  update_style(+OldDirectives, +Options0, -Options)
@@ -383,11 +485,19 @@ make_directive(Lib, Import, (:- autoload(Lib, Import)), _).
     autoload_directories/1,
     index_checked_at/1.
 
+%!  noautoload(+Head, -File) is semidet.
+%
+%   True when Head can be loaded from   File.  Where the autoload system
+%   only considers the autoload directories,   this version searches all
+%   indexed directories.
+
 noautoload(Head, File) :-
     functor(Head, Name, Arity),
+    functor(GenHead, Name, Arity),
     context_module(Here),
     '$autoload':load_library_index(Here:Name, Arity, Here:noautoload('INDEX')),
-    library_index(Head, _, File).
+    library_index(GenHead, _, File),
+    !.
 
 
 		 /*******************************

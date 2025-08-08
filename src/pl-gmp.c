@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2005-2022, University of Amsterdam
+    Copyright (c)  2005-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -45,6 +46,7 @@
 #include "pl-gc.h"
 #include "pl-attvar.h"
 #include "pl-inline.h"
+#include "pl-comp.h"
 #undef LD
 #define LD LOCAL_LD
 
@@ -57,10 +59,12 @@ typedef union
 
 static mpz_t MPZ_MIN_TAGGED;		/* Prolog tagged integers */
 static mpz_t MPZ_MAX_TAGGED;
-static mpz_t MPZ_MIN_PLINT;		/* Prolog int64_t integers */
-static mpz_t MPZ_MAX_PLINT;
+#ifndef O_BF
+static mpz_t MPZ_MIN_INT64;		/* int64_t integers */
+static mpz_t MPZ_MAX_INT64;
+#endif
 static mpz_t MPZ_MAX_UINT64;
-#if SIZEOF_LONG	< SIZEOF_VOIDP
+#if SIZEOF_LONG	< SIZEOF_WORD
 static mpz_t MPZ_MIN_LONG;		/* Prolog int64_t integers */
 static mpz_t MPZ_MAX_LONG;
 #endif
@@ -86,61 +90,127 @@ static void *(*smp_realloc)(void *, size_t, size_t);
 static void  (*smp_free)(void *, size_t);
 
 #define NOT_IN_PROLOG_ARITHMETIC() \
-	(LD == NULL || LD->gmp.context == NULL || LD->gmp.persistent)
+	(LD == NULL || LD->gmp.context == NULL)
 
-static int
-gmp_too_big(void)
-{ GET_LD
+#define ROUND_SIZE(n) (((n) + (sizeof(size_t) - 1))/sizeof(size_t))
 
-  DEBUG(1, Sdprintf("Signalling GMP overflow\n"));
+typedef enum
+{ GMO_TB_OK = 0,
+  GMP_TB_RESTRAINT,
+  GMP_TB_STACK,
+  GMP_TB_MALLOC
+} gmp_tb;
 
-  return (int)outOfStack((Stack)&LD->stacks.global, STACK_OVERFLOW_THROW);
+#define gmp_too_big(why)      LDFUNC(gmp_too_big, why)
+#define gmp_check_size(bytes) LDFUNC(gmp_check_size, bytes)
+
+static void*			/* Actually, does not return */
+gmp_too_big(DECL_LD gmp_tb why)
+{ DEBUG(MSG_GMP_OVERFLOW, Sdprintf("Signalling GMP overflow\n"));
+
+  switch(why)
+  { case GMP_TB_RESTRAINT:
+    { number max = { .type = V_INTEGER };
+      max.value.i = LD->gmp.max_integer_size;
+      PL_error(NULL, 0, "requires more than max_integer_size bytes",
+	       ERR_AR_TRIPWIRE, ATOM_max_integer_size, &max);
+      PL_rethrow();
+    }
+    case GMP_TB_STACK:
+      outOfStack((Stack)&LD->stacks.global, STACK_OVERFLOW_THROW);
+      break;
+    case GMP_TB_MALLOC:
+    default:
+      PL_no_memory();
+      PL_rethrow();
+  }
+
+  abortProlog();		/* Just in case the above fails */
+  PL_rethrow();
+  return false;
 }
 
-#define TOO_BIG_GMP(n) ((n) > 1000 && (n) > (size_t)globalStackLimit())
+
+static int
+gmp_check_size(DECL_LD size_t bytes)
+{ gmp_tb why = GMO_TB_OK;
+
+  if ( bytes <= 1000 )
+    return true;
+  if ( bytes > LD->gmp.max_integer_size )
+    why = GMP_TB_RESTRAINT;
+  else if ( bytes > (size_t)globalStackLimit())
+    why = GMP_TB_STACK;
+  else
+    return true;
+
+  gmp_too_big(why);
+  return false;
+}
+
+
+#define TOO_BIG_GMP(n) ((n) > 1000 &&			   \
+			((n) > LD->gmp.max_integer_size || \
+			 (n) > (size_t)globalStackLimit()))
 
 static void *
 mp_alloc(size_t bytes)
 { GET_LD
+  ar_context *ctx;
   mp_mem_header *mem;
 
   if ( NOT_IN_PROLOG_ARITHMETIC() )
     return smp_alloc(bytes);
 
-  if ( TOO_BIG_GMP(bytes) ||
-       !(mem = malloc(sizeof(mp_mem_header)+bytes)) )
-  { gmp_too_big();
-    abortProlog();
-    PL_rethrow();
-    return NULL;			/* make compiler happy */
-  }
+  if ( !gmp_check_size(bytes) )
+    return NULL;
 
 #if O_BF
   if ( bytes == 0 )
     return NULL;
 #endif
+  ctx = LD->gmp.context;
 
-  GMP_LEAK_CHECK(LD->gmp.allocated += bytes);
-
-  mem->next = NULL;
-  mem->context = LD->gmp.context;
-  if ( LD->gmp.tail )
-  { mem->prev = LD->gmp.tail;
-    LD->gmp.tail->next = mem;
-    LD->gmp.tail = mem;
-  } else
-  { mem->prev = NULL;
-    LD->gmp.head = LD->gmp.tail = mem;
+  size_t fastunits = ROUND_SIZE(bytes)+1;
+  if ( ctx->allocated+fastunits <= GMP_STACK_ALLOC )
+  { size_t *data = &ctx->alloc_buf[ctx->allocated];
+    *data++ = fastunits;
+    ctx->allocated += fastunits;
+    DEBUG(MSG_GMP_ALLOC, Sdprintf("GMP: from stack %zd@%p\n", bytes, data));
+    return data;
   }
-  DEBUG(9, Sdprintf("GMP: alloc %ld@%p\n", bytes, &mem[1]));
 
-  return &mem[1];
+  if ( (mem = tmp_malloc(sizeof(mp_mem_header)+bytes)) )
+  { mem->next = NULL;
+    if ( ctx->tail )
+    { mem->prev = ctx->tail;
+      ctx->tail->next = mem;
+      ctx->tail = mem;
+    } else
+    { mem->prev = NULL;
+      ctx->head = ctx->tail = mem;
+    }
+    DEBUG(MSG_GMP_ALLOC, Sdprintf("GMP: malloc %zd@%p\n", bytes, &mem[1]));
+
+    return &mem[1];
+  } else
+    return gmp_too_big(GMP_TB_MALLOC);
+}
+
+
+static inline size_t *
+mp_on_stack(ar_context *ctx, void *ptr)
+{ if ( ptr > (void*)ctx->alloc_buf && ptr < (void*)&ctx->alloc_buf[GMP_STACK_ALLOC] )
+    return &((size_t*)ptr)[-1];
+
+  return NULL;
 }
 
 
 static void
 mp_free(void *ptr, size_t size)
 { GET_LD
+  ar_context *ctx;
   mp_mem_header *mem;
 
   if ( NOT_IN_PROLOG_ARITHMETIC() )
@@ -152,32 +222,39 @@ mp_free(void *ptr, size_t size)
   if ( !ptr )
     return;
 #endif
+  ctx = LD->gmp.context;
+  size_t *base = mp_on_stack(ctx, ptr);
+  if ( base )
+  { if ( (base-ctx->alloc_buf) + base[0] == ctx->allocated )
+      ctx->allocated -= base[0];
+    return;
+  }
 
   mem = ((mp_mem_header*)ptr)-1;
 
-  if ( mem == LD->gmp.head )
-  { LD->gmp.head = LD->gmp.head->next;
-    if ( LD->gmp.head )
-      LD->gmp.head->prev = NULL;
+  if ( mem == ctx->head )
+  { ctx->head = ctx->head->next;
+    if ( ctx->head )
+      ctx->head->prev = NULL;
     else
-      LD->gmp.tail = NULL;
-  } else if ( mem == LD->gmp.tail )
-  { LD->gmp.tail = LD->gmp.tail->prev;
-    LD->gmp.tail->next = NULL;
+      ctx->tail = NULL;
+  } else if ( mem == ctx->tail )
+  { ctx->tail = ctx->tail->prev;
+    ctx->tail->next = NULL;
   } else
   { mem->prev->next = mem->next;
     mem->next->prev = mem->prev;
   }
 
-  free(mem);
-  DEBUG(9, Sdprintf("GMP: free: %ld@%p\n", size, ptr));
-  GMP_LEAK_CHECK(LD->gmp.allocated -= size);
+  tmp_free(mem);
+  DEBUG(MSG_GMP_ALLOC, Sdprintf("GMP: free: %zd@%p\n", size, ptr));
 }
 
 
 static void *
 mp_realloc(void *ptr, size_t oldsize, size_t newsize)
 { GET_LD
+  ar_context *ctx;
   mp_mem_header *oldmem, *newmem;
 
   if ( NOT_IN_PROLOG_ARITHMETIC() )
@@ -192,53 +269,106 @@ mp_realloc(void *ptr, size_t oldsize, size_t newsize)
   }
 #endif
 
+  if ( newsize > oldsize && !gmp_check_size(newsize) )
+    return NULL;
+
+  ctx = LD->gmp.context;
+  size_t *base = mp_on_stack(ctx, ptr);
+  if ( base )
+  { size_t fastunits = ROUND_SIZE(newsize)+1;
+    size_t alloc0 = base-ctx->alloc_buf;
+
+    if ( alloc0 + base[0] == ctx->allocated ) /* at the top */
+    { if ( alloc0+fastunits-1 <= GMP_STACK_ALLOC )
+      { base[0] = fastunits;		      /* and still fits */
+	ctx->allocated = alloc0+fastunits;
+	return ptr;
+      }
+    } else if ( fastunits <= base[0] )	      /* shrink */
+    { base[0] = fastunits;
+      return ptr;
+    }
+
+    void *new = mp_alloc(newsize);
+    if ( new )
+    { size_t cp = base[0]*sizeof(size_t);
+      if ( newsize < cp )
+	cp = newsize;
+      memcpy(new, ptr, cp);
+    }
+    return new;
+  }
+
   oldmem = ((mp_mem_header*)ptr)-1;
-  if ( TOO_BIG_GMP(newsize) ||
-       !(newmem = realloc(oldmem, sizeof(mp_mem_header)+newsize)) )
-  { gmp_too_big();
-    abortProlog();
-    PL_rethrow();
-    return NULL;			/* make compiler happy */
-  }
+  if ( (newmem = tmp_realloc(oldmem, sizeof(mp_mem_header)+newsize)) )
+  { if ( oldmem != newmem )		/* re-link if moved */
+    { if ( newmem->prev )
+	newmem->prev->next = newmem;
+      else
+	ctx->head = newmem;
 
-  if ( oldmem != newmem )		/* re-link if moved */
-  { if ( newmem->prev )
-      newmem->prev->next = newmem;
-    else
-      LD->gmp.head = newmem;
+      if ( newmem->next )
+	newmem->next->prev = newmem;
+      else
+	ctx->tail = newmem;
+    }
 
-    if ( newmem->next )
-      newmem->next->prev = newmem;
-    else
-      LD->gmp.tail = newmem;
-  }
-
-  GMP_LEAK_CHECK(LD->gmp.allocated -= oldsize;
-		 LD->gmp.allocated += newsize);
-  DEBUG(9, Sdprintf("GMP: realloc %ld@%p --> %ld@%p\n", oldsize, ptr, newsize, &newmem[1]));
-
-  return &newmem[1];
+    DEBUG(MSG_GMP_ALLOC, Sdprintf("GMP: realloc %zd@%p --> %zd@%p\n", oldsize, ptr, newsize, &newmem[1]));
+    return &newmem[1];
+  } else
+    return gmp_too_big(GMP_TB_MALLOC);
 }
 
 
 void
 mp_cleanup(ar_context *ctx)
-{ GET_LD
-  mp_mem_header *mem, *next;
+{ mp_mem_header *mem, *next;
 
-  if ( LD->gmp.context )
-  { for(mem=LD->gmp.head; mem; mem=next)
-    { next = mem->next;
-      if ( mem->context == LD->gmp.context )
-      { DEBUG(9, Sdprintf("GMP: cleanup of %p\n", &mem[1]));
-	mp_free(&mem[1], 0);
-      }
-    }
+  for(mem=ctx->head; mem; mem=next)
+  { next = mem->next;
+    DEBUG(MSG_GMP_ALLOC, Sdprintf("GMP: cleanup of %p\n", &mem[1]));
+    mp_free(&mem[1], 0);
   }
+}
 
-  LD->gmp.context = ctx->parent;
+#ifdef O_DEBUG
+static int
+mp_test_alloc(void)
+{ GET_LD
+  AR_CTX;
+
+  AR_BEGIN();
+
+  char *first  = mp_alloc(8);
+  strcpy(first, "hello");
+  char *second = mp_alloc(8);
+  assert(second-first == sizeof(size_t)+8);
+  /* realloc top */
+  char *ext = mp_realloc(second, 8, 12);
+  assert(ext == second);
+  assert(__PL_ar_ctx.allocated == ROUND_SIZE(8)+1+ROUND_SIZE(12)+1);
+  /* free top */
+  mp_free(ext, 12);
+  assert(__PL_ar_ctx.allocated == ROUND_SIZE(8)+1);
+  /* re-add second */
+  second = mp_alloc(8);
+  assert(second-first == sizeof(size_t)+8);
+  /* realloc non-first (move) */
+  ext = mp_realloc(first, 8, 25);
+  assert(ext-second == sizeof(size_t)+8);
+  assert(strcmp(ext, "hello") == 0);
+  /* shrink last */
+  char *ext2 = mp_realloc(ext, 25, 8);
+  assert(ext == ext2);
+  assert(mp_on_stack(&__PL_ar_ctx, ext2)[0] == ROUND_SIZE(8)+1);
+
+  AR_END();
+
+  return true;
 }
 #endif
+
+#endif /*O_MY_GMP_ALLOC*/
 
 
 #ifdef __WINDOWS__
@@ -351,7 +481,7 @@ globalMPZ(DECL_LD Word at, mpz_t mpz, int flags)
     if ( !hasGlobalSpace(wsz+MPZ_STACK_EXTRA+2) )
     { int rc = ensureGlobalSpace(wsz+MPZ_STACK_EXTRA+2, flags);
 
-      if ( rc != TRUE )
+      if ( rc != true )
 	return rc;
     }
     p = gTop;
@@ -379,7 +509,7 @@ globalMPZ(DECL_LD Word at, mpz_t mpz, int flags)
     *at = consPtr(p, TAG_INTEGER|STG_GLOBAL);
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -409,7 +539,7 @@ globalMPQ(DECL_LD Word at, mpq_t mpq, int flags)
     if ( !hasGlobalSpace(num_wsz+den_wsz+2+2*MPZ_STACK_EXTRA) )
     { int rc = ensureGlobalSpace(num_wsz+den_wsz+2+2*MPZ_STACK_EXTRA, flags);
 
-      if ( rc != TRUE )
+      if ( rc != true )
 	return rc;
     }
     p = gTop;
@@ -448,172 +578,140 @@ globalMPQ(DECL_LD Word at, mpq_t mpq, int flags)
     *at = consPtr(p, TAG_INTEGER|STG_GLOBAL);
   }
 
-  return TRUE;
+  return true;
 }
 
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-get_integer() fetches the value of a Prolog  term known to be an integer
-into a number structure. If the  value  is   a  MPZ  number,  it must be
-handled as read-only and it only be used   as  intptr_t as no calls are made
-that may force a relocation or garbage collection on the global stack.
+get_bigint()  fetches  the value  of  a  Prolog  term  known to  be  a
+non-inlined integer  into a number structure.   If the value is  a MPZ
+number, it must be handled as read-only and it only be used as long as
+no calls are made that may force a relocation or garbage collection on
+the global stack.
 
-The version without O_GMP is a macro defined in pl-gmp.h
+Normally called through the inline get_integer() function.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-void
-get_integer(word w, Number n)
-{ if ( storage(w) == STG_INLINE )
-  { n->type = V_INTEGER,
-    n->value.i = valInt(w);
-  } else
-  { GET_LD
-    Word p = addressIndirect(w);
-    size_t wsize = wsizeofInd(*p);
+static void
+get_mpz_from_stack(Word p, mpz_t mpz)
+{
+#if O_GMP
+  mpz->_mp_size  = mpz_stack_size(*p++);
+  mpz->_mp_alloc = 0;
+  mpz->_mp_d     = (mp_limb_t*) p;
+#elif O_BF
+  slimb_t len = mpz_stack_size(*p++);
+  mpz->ctx	 = NULL;
+  mpz->expn = (slimb_t)*p++;
+  mpz->sign = len < 0;
+  mpz->len  = abs(len);
+  mpz->tab  = (limb_t*)p;
+#endif
+}
 
-    p++;
-    if ( wsize == WORDS_PER_INT64 )
-    { n->type = V_INTEGER;
-      memcpy(&n->value.i, p, sizeof(int64_t));
-    } else
-    { n->type = V_MPZ;
+static void
+get_mpq_from_stack(Word p, mpq_t mpq)
+{ mpz_t num, den;
+  size_t num_size;
 
 #if O_GMP
-      n->value.mpz->_mp_size  = mpz_stack_size(*p++);
-      n->value.mpz->_mp_alloc = 0;
-      n->value.mpz->_mp_d     = (mp_limb_t*) p;
+  num->_mp_size  = mpz_stack_size(*p++);
+  num->_mp_alloc = 0;
+  num->_mp_d     = (mp_limb_t*) (p+1);
+  num_size       = mpz_wsize(num, NULL);
+  den->_mp_size  = mpz_stack_size(*p++);
+  den->_mp_alloc = 0;
+  den->_mp_d     = (mp_limb_t*) (p+num_size);
 #elif O_BF
-      slimb_t len = mpz_stack_size(*p++);
-      n->value.mpz->ctx	 = NULL;
-      n->value.mpz->expn = (slimb_t)*p++;
-      n->value.mpz->sign = len < 0;
-      n->value.mpz->len  = abs(len);
-      n->value.mpz->tab  = (limb_t*)p;
+  slimb_t len = mpz_stack_size(*p++);
+  num->ctx    = NULL;
+  num->alloc  = 0;
+  num->expn   = (slimb_t)*p++;
+  num->sign   = len < 0;
+  num->len    = abs(len);
+  num->tab    = (limb_t*)(p+2);
+  num_size    = mpz_wsize(num, NULL);
+  den->ctx    = NULL;
+  den->alloc  = 0;
+  den->sign   = 0;			/* canonical MPQ */
+  den->len    = mpz_stack_size(*p++);
+  den->expn   = (slimb_t)*p++;
+  den->tab    = (limb_t*) (p+num_size);
 #endif
-    }
-  }
+  *mpq_numref(mpq) = num[0];
+  *mpq_denref(mpq) = den[0];
+}
+
+void
+get_bigint(word w, Number n)
+{ Word p = addressIndirect(w);
+
+  DEBUG(0, assert(storage(w) != STG_INLINE));
+
+  p++;				/* bits of indirect */
+  n->type = V_MPZ;
+  get_mpz_from_stack(p, n->value.mpz);
 }
 
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Get a rational (int or non-int-rational) from a Prolog word, knowing the
+word is not an inlined (tagged) integer.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
 void
-get_rational(DECL_LD word w, Number n)
-{ if ( storage(w) == STG_INLINE )
-  { n->type = V_INTEGER,
-    n->value.i = valInt(w);
+get_rational_no_int(DECL_LD word w, Number n)
+{ Word p = addressIndirect(w);
+
+  p++;
+  if ( (*p&MP_RAT_MASK) )
+  { n->type = V_MPQ;
+    get_mpq_from_stack(p, n->value.mpq);
   } else
-  { Word p = addressIndirect(w);
-    size_t wsize = wsizeofInd(*p);
-
-    p++;
-    if ( wsize == WORDS_PER_INT64 )
-    { n->type = V_INTEGER;
-      memcpy(&n->value.i, p, sizeof(int64_t));
-    } else if ( (*p&MP_RAT_MASK) )
-    { mpz_t num, den;
-      size_t num_size;
-
-      n->type = V_MPQ;
-#if O_GMP
-      num->_mp_size  = mpz_stack_size(*p++);
-      num->_mp_alloc = 0;
-      num->_mp_d     = (mp_limb_t*) (p+1);
-      num_size = mpz_wsize(num, NULL);
-      den->_mp_size  = mpz_stack_size(*p++);
-      den->_mp_alloc = 0;
-      den->_mp_d     = (mp_limb_t*) (p+num_size);
-#elif O_BF
-      slimb_t len = mpz_stack_size(*p++);
-      num->ctx	= NULL;
-      num->expn = (slimb_t)*p++;
-      num->sign = len < 0;
-      num->len  = abs(len);
-      num->tab  = (limb_t*)(p+2);
-      num_size  = mpz_wsize(num, NULL);
-      den->ctx  = NULL;
-      den->sign = 0;			/* canonical MPQ */
-      den->len  = mpz_stack_size(*p++);
-      den->expn = (slimb_t)*p++;
-      den->tab  = (limb_t*) (p+num_size);
-#endif
-      *mpq_numref(n->value.mpq) = num[0];
-      *mpq_denref(n->value.mpq) = den[0];
-    } else
-    { n->type = V_MPZ;
-
-#if O_GMP
-      n->value.mpz->_mp_size  = mpz_stack_size(*p++);
-      n->value.mpz->_mp_alloc = 0;
-      n->value.mpz->_mp_d     = (mp_limb_t*) p;
-#elif O_BF
-      slimb_t len = mpz_stack_size(*p++);
-      n->value.mpz->ctx	 = NULL;
-      n->value.mpz->expn = (slimb_t)*p++;
-      n->value.mpz->sign = len < 0;
-      n->value.mpz->len  = abs(len);
-      n->value.mpz->tab  = (limb_t*)p;
-#endif
-    }
+  { n->type = V_MPZ;
+    get_mpz_from_stack(p, n->value.mpz);
   }
 }
 
 
 Code
 get_mpz_from_code(Code pc, mpz_t mpz)
-{ size_t wsize = wsizeofInd(*pc);
+{ word m;
+  Word data;
+  pc = code_get_indirect(pc, &m, &data);
 
-  pc++;
-#if O_GMP
-  mpz->_mp_size  = mpz_stack_size(*pc);
-  mpz->_mp_alloc = 0;
-  mpz->_mp_d     = (mp_limb_t*)(pc+1);
-#elif O_BF
-  slimb_t len = mpz_stack_size(*pc);
-  mpz->ctx    = NULL;
-  mpz->expn   = (slimb_t)pc[1];
-  mpz->sign   = len < 0;
-  mpz->len    = abs(len);
-  mpz->tab    = (limb_t*)pc+2;
-#endif
+  get_mpz_from_stack(data, mpz);
 
-  return pc+wsize;
+  return pc;
 }
+
 
 Code
 get_mpq_from_code(Code pc, mpq_t mpq)
-{ Word p = pc;
-  size_t wsize = wsizeofInd(*p);
-  p++;
-  int num_size = mpz_stack_size(*p++);
-  int den_size = mpz_stack_size(*p++);
-  size_t limpsize = sizeof(mp_limb_t) * abs(num_size);
-  mpz_t num, den;
+{ word m;
+  Word data;
+  pc = code_get_indirect(pc, &m, &data);
 
-#if O_GMP
-  num->_mp_size   = num_size;
-  den->_mp_size   = den_size;
-  num->_mp_alloc  = 0;
-  den->_mp_alloc  = 0;
-  num->_mp_d = (mp_limb_t*)p;
-  p += (limpsize+sizeof(word)-1)/sizeof(word);
-  den->_mp_d = (mp_limb_t*)p;
-#elif O_BF
-  num->ctx = NULL;
-  num->expn = *p++;
-  den->ctx = NULL;
-  den->expn = *p++;
-  num->sign = num_size < 0;
-  num->len  = abs(num_size);
-  den->sign = den_size < 0;
-  den->len  = abs(den_size);
-  num->tab = (mp_limb_t*)p;
-  p += (limpsize+sizeof(word)-1)/sizeof(word);
-  den->tab = (mp_limb_t*)p;
-#endif
-  *mpq_numref(mpq) = num[0];
-  *mpq_denref(mpq) = den[0];
+  get_mpq_from_stack(data, mpq);
 
-  return pc+wsize+1;
+  return pc;
 }
+
+
+bool
+get_int64(DECL_LD word w, int64_t *ip)
+{ if ( tagex(w) == (TAG_INTEGER|STG_INLINE) )
+  { *ip = valInt(w);
+    return true;
+  } else if ( tagex(w) == (TAG_INTEGER|STG_GLOBAL) )
+  { number n;
+
+    get_bigint(w, &n);
+    return mpz_to_int64(n.value.mpz, ip);
+  } else
+    return false;
+}
+
 
 
 		 /*******************************
@@ -694,13 +792,15 @@ avoided by creating a dummy mpz that looks big enough to mpz_import().
 
 static char *
 load_mpz_size(const char *data, int *szp)
-{ int size = 0;
+{ const unsigned char *udata = (const unsigned char*)data;
+  uint32_t usize = 0;
+  int32_t size;
 
-  size |= (data[0]&0xff)<<24;
-  size |= (data[1]&0xff)<<16;
-  size |= (data[2]&0xff)<<8;
-  size |= (data[3]&0xff);
-  size = (size << SHIFTSIGN32)>>SHIFTSIGN32;	/* sign extend */
+  usize |= ((uint32_t)udata[0])<<24;
+  usize |= ((uint32_t)udata[1])<<16;
+  usize |= ((uint32_t)udata[2])<<8;
+  usize |= ((uint32_t)udata[3]);
+  size = (int32_t)usize;
 
   *szp = size;
   data += 4;
@@ -716,9 +816,9 @@ load_abs_mpz_size(const char *data, int *szp, int *neg)
   if ( neg )
   { if ( size < 0 )
     { size = -size;
-      *neg = TRUE;
+      *neg = true;
     } else
-    { *neg = FALSE;
+    { *neg = false;
     }
   } else if ( size < 0 )
     size = -size;
@@ -755,8 +855,7 @@ by N bytes in big endian notation.
 
 char *
 loadMPZFromCharp(const char *data, Word r, Word *store)
-{ GET_LD
-  int size = 0;
+{ int size = 0;
   size_t limbsize;
   size_t wsize;
   int neg;
@@ -790,8 +889,7 @@ loadMPZFromCharp(const char *data, Word r, Word *store)
 
 char *
 loadMPQFromCharp(const char *data, Word r, Word *store)
-{ GET_LD
-  int num_size;
+{ int num_size;
   int den_size;
   size_t num_limbsize, num_wsize;
   size_t den_limbsize, den_wsize;
@@ -958,7 +1056,7 @@ promoteToMPZNumber(number *n)
       break;
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -993,7 +1091,7 @@ promoteToMPQNumber(number *n)
     }
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -1072,7 +1170,7 @@ clearGMPNumber(Number n)
 void
 initGMP(void)
 { if ( !GD->gmp.initialised )
-  { GD->gmp.initialised = TRUE;
+  { GD->gmp.initialised = true;
 
 #if O_BF
     initBF();
@@ -1080,10 +1178,12 @@ initGMP(void)
 
     mpz_init_set_si64(MPZ_MIN_TAGGED, PLMINTAGGEDINT);
     mpz_init_set_si64(MPZ_MAX_TAGGED, PLMAXTAGGEDINT);
-    mpz_init_set_si64(MPZ_MIN_PLINT, PLMININT);
-    mpz_init_set_si64(MPZ_MAX_PLINT, PLMAXINT);
+#ifndef O_BF
+    mpz_init_set_si64(MPZ_MIN_INT64,  INT64_MIN);
+    mpz_init_set_si64(MPZ_MAX_INT64,  INT64_MAX);
+#endif
     mpz_init_max_uint(MPZ_MAX_UINT64, 64);
-#if SIZEOF_LONG < SIZEOF_VOIDP
+#if SIZEOF_LONG < SIZEOF_WORD
     mpz_init_set_si64(MPZ_MIN_LONG, LONG_MIN);
     mpz_init_set_si64(MPZ_MAX_LONG, LONG_MAX);
 #endif
@@ -1092,6 +1192,7 @@ initGMP(void)
     { mp_get_memory_functions(&smp_alloc, &smp_realloc, &smp_free);
       mp_set_memory_functions(mp_alloc, mp_realloc, mp_free);
     }
+    DEBUG(0, mp_test_alloc());
 #endif
 
 #if O_GMP
@@ -1108,7 +1209,7 @@ initGMP(void)
 void
 cleanupGMP(void)
 { if ( GD->gmp.initialised )
-  { GD->gmp.initialised = FALSE;
+  { GD->gmp.initialised = false;
 
 #ifdef O_MY_GMP_ALLOC
     if ( !GD->gmp.keep_alloc_functions )
@@ -1116,8 +1217,10 @@ cleanupGMP(void)
 #endif
     mpz_clear(MPZ_MIN_TAGGED);
     mpz_clear(MPZ_MAX_TAGGED);
-    mpz_clear(MPZ_MIN_PLINT);
-    mpz_clear(MPZ_MAX_PLINT);
+#ifndef O_BF
+    mpz_clear(MPZ_MIN_INT64);
+    mpz_clear(MPZ_MAX_INT64);
+#endif
     mpz_clear(MPZ_MAX_UINT64);
 #if SIZEOF_LONG < SIZEOF_VOIDP
     mpz_clear(MPZ_MIN_LONG);
@@ -1134,6 +1237,8 @@ cleanupGMP(void)
    as used  for clause indexing.   If the integer  is huge, we  do not
    want to use the whole thing.   Instead, we pick the dimensions, the
    first two and last limb of the content.
+
+   Note: p might be aligned at Code rather than Word.
  */
 
 word
@@ -1183,8 +1288,8 @@ bignum_index(const word *p)
 
 int
 mpz_to_int64(mpz_t mpz, int64_t *i)
-{ if ( mpz_cmp(mpz, MPZ_MIN_PLINT) >= 0 &&
-       mpz_cmp(mpz, MPZ_MAX_PLINT) <= 0 )
+{ if ( mpz_cmp(mpz, MPZ_MIN_INT64) >= 0 &&
+       mpz_cmp(mpz, MPZ_MAX_INT64) <= 0 )
   { uint64_t v;
 
     mpz_export(&v, NULL, ORDER, sizeof(v), 0, 0, mpz);
@@ -1199,10 +1304,10 @@ mpz_to_int64(mpz_t mpz, int64_t *i)
     else
       *i = (int64_t)v;
 
-    return TRUE;
+    return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 /* return: <0:              -1
@@ -1265,15 +1370,13 @@ without any knowledge of the represented data.
 #define put_mpz(at, mpz, flags) LDFUNC(put_mpz, at, mpz, flags)
 static int
 put_mpz(DECL_LD Word at, mpz_t mpz, int flags)
-{ int64_t v;
-
-  DEBUG(2,
+{ DEBUG(2,
 	{ char buf[256];
 	  Sdprintf("put_mpz(%s)\n",
 		   mpz_get_str(buf, 10, mpz));
 	});
 
-#if SIZEOF_LONG < SIZEOF_VOIDP
+#if SIZEOF_LONG < SIZEOF_WORD
   if ( mpz_cmp(mpz, MPZ_MIN_LONG) >= 0 &&
        mpz_cmp(mpz, MPZ_MAX_LONG) <= 0 )
 #else
@@ -1285,14 +1388,13 @@ put_mpz(DECL_LD Word at, mpz_t mpz, int flags)
     if ( !hasGlobalSpace(0) )		/* ensure we have room for bindConst */
     { int rc = ensureGlobalSpace(0, flags);
 
-      if ( rc != TRUE )
+      if ( rc != true )
 	return rc;
     }
 
     *at = consInt(v);
-    return TRUE;
-  } else if ( mpz_to_int64(mpz, &v) )
-  { return put_int64(at, v, flags);
+    assert(valInt(*at) == v);
+    return true;
   } else
   { return globalMPZ(at, mpz, flags);
   }
@@ -1302,11 +1404,33 @@ put_mpz(DECL_LD Word at, mpz_t mpz, int flags)
 
 /* returns one of
 
-  TRUE: ok
-  FALSE: some error
+  true: ok
+  false: some error
   GLOBAL_OVERFLOW: no space
   LOCAL_OVERFLOW: cannot represent (no GMP)
 */
+
+int
+put_int64(DECL_LD Word at, int64_t l, int flags)
+{ word r;
+
+  r = consInt(l);
+  if ( valInt(r) == l )
+  { *at = r;
+    return true;
+  } else
+  {
+#ifdef O_BIGNUM
+    mpz_t mpz;
+
+    mpz_init_set_si64(mpz, l);
+    return globalMPZ(at, mpz, flags);
+#else
+    return LOCAL_OVERFLOW;
+#endif
+  }
+}
+
 
 int
 put_uint64(DECL_LD Word at, uint64_t l, int flags)
@@ -1318,7 +1442,7 @@ put_uint64(DECL_LD Word at, uint64_t l, int flags)
     mpz_t mpz;
 
     mpz_init_set_uint64(mpz, l);
-    return put_mpz(at, mpz, flags);
+    return globalMPZ(at, mpz, flags);
 #else
     return LOCAL_OVERFLOW;
 #endif
@@ -1334,13 +1458,13 @@ affected by GC/shift.  The intented scenario is:
 
   { word c;
 
-    if ( (rc=put_number(&c, n, ALLOW_GC)) == TRUE )
+    if ( (rc=put_number(&c, n, ALLOW_GC)) == true )
       bindConst(<somewhere>, c);
     ...
   }
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-int
+int				/* true, false, _*OVERFLOW */
 put_number(DECL_LD Word at, Number n, int flags)
 { switch(n->type)
   { case V_INTEGER:
@@ -1350,12 +1474,12 @@ put_number(DECL_LD Word at, Number n, int flags)
       { if ( !hasGlobalSpace(0) )
 	{ int rc = ensureGlobalSpace(0, flags);
 
-	  if ( rc != TRUE )
+	  if ( rc != true )
 	    return rc;
 	}
 
 	*at = w;
-	return TRUE;
+	return true;
       }
 
       return put_int64(at, n->value.i, flags);
@@ -1375,28 +1499,33 @@ put_number(DECL_LD Word at, Number n, int flags)
   }
 
   assert(0);
-  return FALSE;
+  return false;
 }
 
 
 int
 PL_unify_number(DECL_LD term_t t, Number n)
 { Word p = valTermRef(t);
+  word w;
 
   deRef(p);
 
-  if ( canBind(*p) )
-  { word w;
-    int rc;
+  if ( isVar(*p) &&
+       n->type == V_INTEGER &&
+       valInt(w=consInt(n->value.i)) == n->value.i )
+    return varBindConst(p, w);
 
-    if ( (rc=put_number(&w, n, ALLOW_GC)) != TRUE )
+  if ( canBind(*p) )
+  { int rc;
+
+    if ( (rc=put_number(&w, n, ALLOW_GC)) != true )
       return raiseStackOverflow(rc);
 
     p = valTermRef(t);			/* put_number can shift the stacks */
     deRef(p);
 
     bindConst(p, w);
-    succeed;
+    return true;
   }
 
   switch(n->type)
@@ -1451,12 +1580,12 @@ PL_put_number(DECL_LD term_t t, Number n)
 { word w;
   int rc;
 
-  if ( (rc=put_number(&w, n, ALLOW_GC)) != TRUE )
+  if ( (rc=put_number(&w, n, ALLOW_GC)) != true )
     return raiseStackOverflow(rc);
 
   *valTermRef(t) = w;
 
-  return TRUE;
+  return true;
 }
 
 
@@ -1498,7 +1627,7 @@ API_STUB(int)
 		 *	     PROMOTION		*
 		 *******************************/
 
-int
+bool
 promoteToFloatNumber(Number n)
 { switch(n->type)
   { case V_INTEGER:
@@ -1524,18 +1653,18 @@ promoteToFloatNumber(Number n)
     }
 #endif
     case V_FLOAT:
-      break;
+      return true;
   }
 
   return check_float(n);
 }
 
 
-int
+bool
 promoteNumber(Number n, numtype t)
 { switch(t)
   { case V_INTEGER:
-      return TRUE;
+      return true;
 #ifdef O_BIGNUM
     case V_MPZ:
       return promoteToMPZNumber(n);
@@ -1546,19 +1675,19 @@ promoteNumber(Number n, numtype t)
       return promoteToFloatNumber(n);
     default:
       assert(0);
-      return FALSE;
+      return false;
   }
 }
 
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-same_type_numbers(n1, n2)
+make_same_type_numbers(n1, n2)
     Upgrade both numbers to the `highest' type of both. Number types are
     defined in the enum-type numtype, which is supposed to define a
     total ordering between the number types.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-int
+bool
 make_same_type_numbers(Number n1, Number n2)
 { if ( (int)n1->type > (int)n2->type )
     return promoteNumber(n2, n1->type);
@@ -1628,7 +1757,7 @@ cmpFloatNumbers(Number n1, Number n2)
 
 int
 cmpNumbers(Number n1, Number n2)
-{ if ( n1->type != n2->type )
+{ if ( unlikely(n1->type != n2->type) )
   { int rc;
 
     if ( n1->type == V_FLOAT || n2->type == V_FLOAT )
@@ -1640,28 +1769,34 @@ cmpNumbers(Number n1, Number n2)
 
   switch(n1->type)
   { case V_INTEGER:
-      return n1->value.i  < n2->value.i ? CMP_LESS :
-	     n1->value.i == n2->value.i ? CMP_EQUAL : CMP_GREATER;
+      return SCALAR_TO_CMP(n1->value.i, n2->value.i);
 #ifdef O_BIGNUM
     case V_MPZ:
     { int rc = mpz_cmp(n1->value.mpz, n2->value.mpz);
 
-      return rc < 0 ? CMP_LESS : rc == 0 ? CMP_EQUAL : CMP_GREATER;
+      return SCALAR_TO_CMP(rc, 0);
     }
     case V_MPQ:
     { int rc = mpq_cmp(n1->value.mpq, n2->value.mpq);
 
-      return rc < 0 ? CMP_LESS : rc == 0 ? CMP_EQUAL : CMP_GREATER;
+      return SCALAR_TO_CMP(rc, 0);
     }
 #endif
     case V_FLOAT:
-      return n1->value.f  < n2->value.f ? CMP_LESS :
-	     n1->value.f == n2->value.f ? CMP_EQUAL :
-	     n1->value.f  > n2->value.f ? CMP_GREATER : CMP_NOTEQ;
-  }
+    { if ( n1->value.f == n2->value.f )
+	return CMP_EQUAL;
 
-  assert(0);
-  return CMP_EQUAL;
+      int lt = n1->value.f  < n2->value.f;
+      int gt = n1->value.f  > n2->value.f;
+
+      if ( !lt && !gt )		/* either is NaN */
+	return CMP_NOTEQ;	/* as SCALAR_TO_CMP() */
+      return gt-lt;
+    }
+    default:
+      assert(0);
+      return CMP_EQUAL;
+  }
 }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1688,11 +1823,23 @@ cmp_f_f(double d1, double d2)
 }
 
 /* See https://stackoverflow.com/questions/58734034/ */
-static int cmp_i_f(int64_t i1, double d2)
-{ int64_t i1_lo = i1 & 0x00000000FFFFFFFF;
-  int64_t i1_hi = i1 & 0xFFFFFFFF00000000;
-
-  return cmp_f_f((double)i1_lo, d2-(double)i1_hi);
+static int
+cmp_i_f(int64_t i1, double d2)
+{ if ( isnan(d2) )
+  { return CMP_NOTEQ;
+  } else
+  { double d1_lo, d1_hi;
+#define TOD(i) ((double)((int64_t)(i)))
+    if ( i1 >= 0 )
+    { d1_lo = TOD(i1 & 0x00000000FFFFFFFF);
+      d1_hi = TOD(i1 & 0xFFFFFFFF00000000);
+    } else
+    { d1_lo = TOD(i1 | 0xFFFFFFFF00000000);
+      d1_hi = TOD(i1 | 0x00000000FFFFFFFF)+1.0;
+    }
+#undef TOD
+    return SCALAR_TO_CMP(d1_lo, d2-d1_hi);
+  }
 }
 
 #ifdef O_BIGNUM
@@ -1711,14 +1858,46 @@ cmp_q_q(mpq_t q1, mpq_t q2)
 
 static int
 cmp_z_i(mpz_t z1, int64_t i2)
-{ int t = mpz_cmp_si(z1,i2);
+{
+#if SIZEOF_LONG == 8
+  int t = mpz_cmp_si(z1,i2);
   return (t < 0) ? CMP_LESS : (t > 0);
+#else
+  if ( i2 >= LONG_MIN && i2 <= LONG_MAX )
+  { int t = mpz_cmp_si(z1,(long)i2);
+    return (t < 0) ? CMP_LESS : (t > 0);
+  } else
+  { mpz_t a;
+    mpz_init_set_si64(a, i2);
+    int t = cmp_z_z(z1, a);
+    mpz_clear(a);
+    return t;
+  }
+#endif
 }
 
 static int
 cmp_q_i(mpq_t q1, int64_t i2)
-{ int t = mpq_cmp_si(q1,i2,1);
+{
+#if SIZEOF_LONG == 8
+  int t = mpq_cmp_si(q1,i2,1);
   return (t < 0) ? CMP_LESS : (t > 0);
+#else
+  if ( i2 >= LONG_MIN && i2 <= LONG_MAX )
+  { int t = mpq_cmp_si(q1,(long)i2,1);
+    return (t < 0) ? CMP_LESS : (t > 0);
+  } else
+  { mpq_t qa;
+    mpz_t za;
+    mpq_init(qa);
+    mpz_init_set_si64(za, i2);
+    mpq_set_z(qa, za);
+    int t = cmp_q_q(q1, qa);
+    mpz_clear(za);
+    mpq_clear(qa);
+    return t;
+  }
+#endif
 }
 
 static int
@@ -2063,7 +2242,7 @@ mpq_set_double(mpq_t r, double f)	/* float -> nice rational */
 		 *	 PUBLIC INTERFACE	*
 		 *******************************/
 
-int
+bool
 PL_get_mpz(term_t t, mpz_t mpz)
 { GET_LD
   Word p = valTermRef(t);
@@ -2086,46 +2265,48 @@ PL_get_mpz(term_t t, mpz_t mpz)
 	assert(0);
     }
 
-    return TRUE;
+    return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 
-int
+bool
 PL_get_mpq(term_t t, mpq_t mpq)
 { if ( PL_is_rational(t) )
   { GET_LD
     number n;
+    Word p = valTermRef(t);
 
-    get_rational(t, &n);
+    deRef(p);
+    get_rational(*p, &n);
     switch(n.type)
     { case V_INTEGER:
 	if ( n.value.i >= LONG_MIN && n.value.i <= LONG_MAX )
 	{ mpq_set_si(mpq, (long)n.value.i, 1L);
-	  return TRUE;
+	  return true;
 	}
 	promoteToMPZNumber(&n);
 	/*FALLTHROUGH*/
       case V_MPZ:
 	mpq_set_z(mpq, n.value.mpz);
 	clearNumber(&n);
-	return TRUE;
+	return true;
       case V_MPQ:
 	mpq_set(mpq, n.value.mpq);
 	clearNumber(&n);
-	return TRUE;
+	return true;
       default:
 	;
     }
   }
 
-  return FALSE;
+  return false;
 }
 
 
-int
+bool
 PL_unify_mpz(term_t t, mpz_t mpz)
 { GET_LD
   number n;
@@ -2142,7 +2323,7 @@ PL_unify_mpz(term_t t, mpz_t mpz)
 }
 
 
-int
+bool
 PL_unify_mpq(term_t t, mpq_t mpq)
 { GET_LD
   number n;

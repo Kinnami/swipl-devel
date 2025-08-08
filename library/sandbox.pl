@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2013-2022, VU University Amsterdam
+    Copyright (c)  2013-2024, VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v
     All rights reserved.
@@ -569,6 +569,10 @@ safe_primitive(<(_,_)).
 :- if(current_prolog_flag(bounded, false)).
 safe_primitive(system:nth_integer_root_and_remainder(_,_,_,_)).
 :- endif.
+safe_primitive(system:current_arithmetic_function(_)).
+safe_primitive(system:bounded_number(_,_,_)).
+safe_primitive(system:float_class(_,_)).
+safe_primitive(system:float_parts(_,_,_,_)).
 
                                         % term-handling
 safe_primitive(arg(_,_,_)).
@@ -689,6 +693,7 @@ safe_primitive(asserta(X)) :- safe_assert(X).
 safe_primitive(assertz(X)) :- safe_assert(X).
 safe_primitive(retract(X)) :- safe_assert(X).
 safe_primitive(retractall(X)) :- safe_assert(X).
+safe_primitive(current_predicate(X)) :- safe_current_predicate(X).
 safe_primitive('$dcg':dcg_translate_rule(_,_)).
 safe_primitive('$syspreds':predicate_property(Pred, _)) :-
     nonvar(Pred),
@@ -705,6 +710,7 @@ safe_primitive('$dicts':'.'(_,K,_)) :-
     ).
 
 dict_built_in(get(_)).
+dict_built_in(get(_,_)).
 dict_built_in(put(_)).
 dict_built_in(put(_,_)).
 
@@ -719,6 +725,7 @@ safe_primitive(system:between(_,_,_)).
 safe_primitive(system:succ(_,_)).
 safe_primitive(system:plus(_,_,_)).
 safe_primitive(system:float_class(_,_)).
+safe_primitive(system:term_singletons(_,_)).
 safe_primitive(system:term_variables(_,_)).
 safe_primitive(system:term_variables(_,_,_)).
 safe_primitive(system:'$term_size'(_,_,_)).
@@ -744,7 +751,7 @@ safe_primitive(system:b_getval(_,_)).
 safe_primitive(system:b_setval(Var,_)) :-
     safe_global_var(Var).
 safe_primitive(system:nb_getval(_,_)).
-safe_primitive('$syspreds':nb_setval(Var,_)) :-
+safe_primitive(system:nb_setval(Var,_)) :-
     safe_global_var(Var).
 safe_primitive(system:nb_linkval(Var,_)) :-
     safe_global_var(Var).
@@ -862,6 +869,15 @@ safe_global_var(Name) :-
 %
 %   Declare the given global variable safe to write to.
 
+%!  safe_current_predicate(+X)
+%
+%   current_predicate/1 is safe when not used with qualification.
+
+safe_current_predicate(X) :-
+    nonvar(X),
+    X = _:_, !,
+    fail.
+safe_current_predicate(_).
 
 %!  safe_meta(+Goal, -Called:list(callable)) is semidet.
 %
@@ -1100,16 +1116,16 @@ safe_output(current_error).
 
 :- public format_calls/3.                       % used in pengines_io
 
-format_calls(Format, _Args, _Calls) :-
-    var(Format),
-    !,
-    instantiation_error(Format).
 format_calls(Format, Args, Calls) :-
+    is_list(Args),
+    !,
     format_types(Format, Types),
     (   format_callables(Types, Args, Calls)
     ->  true
     ;   throw(error(format_error(Format, Types, Args), _))
     ).
+format_calls(Format, Arg, Calls) :-
+    format_calls(Format, [Arg], Calls).
 
 format_callables([], [], []).
 format_callables([callable|TT], [G|TA], [G|TG]) :-
@@ -1260,6 +1276,7 @@ safe_path(A/B) :-
 safe_prolog_flag(generate_debug_info, _).
 safe_prolog_flag(optimise, _).
 safe_prolog_flag(occurs_check, _).
+safe_prolog_flag(write_attributes, _).
 % syntax
 safe_prolog_flag(var_prefix, _).
 safe_prolog_flag(double_quotes, _).

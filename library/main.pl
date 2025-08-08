@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2002-2021, University of Amsterdam
+    Copyright (c)  2002-2025, University of Amsterdam
 			      VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -40,15 +40,23 @@
 	    argv_options/4,             % +Argv, -RestArgv, -Options, +ParseOpts
 	    argv_usage/1,               % +Level
 	    cli_parse_debug_options/2,  % +OptionsIn, -Options
+            cli_debug_opt_type/3,       % -Flag, -Option, -Type
+            cli_debug_opt_help/2,       % -Option, -Message
+            cli_debug_opt_meta/2,       % -Option, -Arg
 	    cli_enable_development_system/0
-	  ]).
-:- autoload(library(apply), [maplist/3, partition/4]).
-:- autoload(library(lists), [append/3]).
+          ]).
+:- use_module(library(debug), [debug/1]).
+:- autoload(library(apply), [maplist/2, maplist/3, partition/4]).
+:- autoload(library(lists),
+            [append/3, max_list/2, sum_list/2, list_to_set/2, member/2]).
 :- autoload(library(pairs), [pairs_keys/2, pairs_values/2]).
 :- autoload(library(prolog_code), [pi_head/2]).
 :- autoload(library(prolog_debug), [spy/1]).
 :- autoload(library(dcg/high_order), [sequence//3, sequence//2]).
-:- autoload(library(option), [option/2]).
+:- autoload(library(option), [option/2, option/3]).
+:- if(exists_source(library(doc_markdown))).
+:- autoload(library(doc_markdown), [print_markdown/2]).
+:- endif.
 
 :- meta_predicate
     argv_options(:, -, -),
@@ -166,10 +174,10 @@ interrupt(_Sig) :-
 %         Disjunctive type.  Disjunction can be used create long
 %         options with optional values.   For example, using the type
 %         ``nonneg|boolean``, for an option `http` handles ``--http``
-%         as http(true), ``--no-http`` as http(false), ``--http=3000``
-%         and ``--http 3000`` as http(3000).  With an optional boolean
-%         an option is considered boolean if it is the last or the next
-%         argument starts with a hyphen (``-``).
+%         as http(true), ``--no-http`` as http(false) and ``--http=3000``
+%         as http(3000). Note that with an optional boolean a option is
+%         considered boolean unless it has a value written as
+%         ``--longopt=value``.
 %       - boolean(Default)
 %       - boolean
 %         Boolean options are special.  They do not take a value except
@@ -202,10 +210,18 @@ interrupt(_Sig) :-
 %       - file
 %         Convert to a file name in Prolog canonical notation
 %         using prolog_to_os_filename/2.
+%       - directory
+%         Convert to a file name in Prolog canonical notation
+%         using prolog_to_os_filename/2.  No checking is done and
+%         thus this type is the same as `file`
 %       - file(Access)
 %         As `file`, and check access using access_file/2.  A value `-`
 %         is not checked for access, assuming the application handles
 %         this as standard input or output.
+%       - directory(Access)
+%         As `directory`, and check access.  Access is one of `read`
+%         `write` or `create`.  In the latter case the parent directory
+%         must exist and have write access.
 %       - term
 %         Parse option value to a Prolog term.
 %       - term(+Options)
@@ -249,6 +265,16 @@ argv_options(_:Argv, Positional, Options) :-
 %       positional argument, returning options that follow this
 %       argument as positional arguments.  E.g, ``-x file -y``
 %       results in positional arguments `[file, '-y']`
+%     - unknown_option(+Mode)
+%       One of `error` (default) or `pass`.  Using `pass`, the
+%       option is passed in Positional.  Multi-flag short options
+%       may be processed partially.  For example, if ``-v`` is defined
+%       and `-iv` is in Argv, Positional receives `'-i'` and the
+%       option defined with ``-v`` is added to Options.
+%
+%   @tbd When passing unknown options we may wish to process multi-flag
+%   options as a whole or not at all rather than passing the unknown
+%   flags.
 
 argv_options(Argv, Positional, Options, POptions) :-
     option(on_error(halt(Code)), POptions),
@@ -359,6 +385,8 @@ opt_parse([H|T], Positional, Options, M, POptions) =>
     opt_parse(T, PT, Options, M, POptions).
 
 
+%!  take_long(+LongOpt, +Argv, -Positional, -Option, +M, +POptions) is det.
+
 take_long(Long, T, Positional, Options, M, POptions) :- % --long=Value
     sub_atom(Long, B, _, A, =),
     !,
@@ -370,6 +398,10 @@ take_long(Long, T, Positional, Options, M, POptions) :- % --long=Value
 	Opt =.. [Name,Value],
 	Options = [Opt|OptionsT],
 	opt_parse(T, Positional, OptionsT, M, POptions)
+    ;   option(unknown_option(pass), POptions, error)
+    ->  atom_concat(--, Long, Opt),
+        Positional = [Opt|PositionalT],
+        opt_parse(T, PositionalT, Options, M, POptions)
     ;   opt_error(unknown_option(M:LName0))
     ).
 take_long(LName0, T, Positional, Options, M, POptions) :- % --long
@@ -396,11 +428,7 @@ take_long_(Long, T, Positional, Options, M, POptions) :- % --no-long, --nolong
 take_long_(Long, T, Positional, Options, M, POptions) :- % --long [value]
     in(M:opt_type(Long, Name, Type)),
     type_optional_bool(Type, Value),
-    (   T = [VAtom|_],
-        sub_atom(VAtom, 0, _, _, -)
-    ->  true
-    ;   T == []
-    ),
+    !,
     Opt =.. [Name,Value],
     Options = [Opt|OptionsT],
     opt_parse(T, Positional, OptionsT, M, POptions).
@@ -414,18 +442,34 @@ take_long_(Long, T, Positional, Options, M, POptions) :- % --long
 	opt_parse(T1, Positional, OptionsT, M, POptions)
     ;   opt_error(missing_value(Long, Type))
     ).
+take_long_(Long,  T, Positional, Options, M, POptions) :-
+    option(unknown_option(pass), POptions, error),
+    !,
+    atom_concat(--, Long, Opt),
+    Positional = [Opt|PositionalT],
+    opt_parse(T, PositionalT, Options, M, POptions).
 take_long_(Long, _, _, _, M, _) :-
     opt_error(unknown_option(M:Long)).
 
-take_shorts([], T, Positional, Options, M, POptions) :-
+%!  take_shorts(+OptChars, +Argv, -Positional, -Options, +M, +POptions)
+
+take_shorts(OptChars, Argv, Positional, Options, M, POptions) :-
+    take_shorts_(OptChars, OptLeft, Argv, Positional0, Options, M, POptions),
+    (   OptLeft == []
+    ->  Positional = Positional0
+    ;   atom_chars(Pass, [-|OptLeft]),
+        Positional = [Pass|Positional0]
+    ).
+
+take_shorts_([], [], T, Positional, Options, M, POptions) :-
     opt_parse(T, Positional, Options, M, POptions).
-take_shorts([H|T], Argv, Positional, Options, M, POptions) :-
+take_shorts_([H|T], Pass, Argv, Positional, Options, M, POptions) :-
     opt_bool_type(H, Name, Value, M),
     !,
     Opt =.. [Name,Value],
     Options = [Opt|OptionsT],
-    take_shorts(T, Argv, Positional, OptionsT, M, POptions).
-take_shorts([H|T], Argv, Positional, Options, M, POptions) :-
+    take_shorts_(T, Pass, Argv, Positional, OptionsT, M, POptions).
+take_shorts_([H|T], Pass, Argv, Positional, Options, M, POptions) :-
     in(M:opt_type(H, Name, Type)),
     !,
     (   T == []
@@ -433,16 +477,19 @@ take_shorts([H|T], Argv, Positional, Options, M, POptions) :-
 	->  opt_value(Type, H, VAtom, Value),
 	    Opt =.. [Name,Value],
 	    Options = [Opt|OptionsT],
-	    take_shorts(T, ArgvT, Positional, OptionsT, M, POptions)
+	    take_shorts_(T, Pass, ArgvT, Positional, OptionsT, M, POptions)
 	;   opt_error(missing_value(H, Type))
 	)
     ;   atom_chars(VAtom, T),
 	opt_value(Type, H, VAtom, Value),
 	Opt =.. [Name,Value],
 	Options = [Opt|OptionsT],
-	take_shorts([], Argv, Positional, OptionsT, M, POptions)
+	take_shorts_([], Pass, Argv, Positional, OptionsT, M, POptions)
     ).
-take_shorts([H|_], _, _, _, M, _) :-
+take_shorts_([H|T], [H|Pass], Argv, Positional, Options, M, POptions) :-
+    option(unknown_option(pass), POptions, error), !,
+    take_shorts_(T, Pass, Argv, Positional, Options, M, POptions).
+take_shorts_([H|_], _, _, _, _, M, _) :-
     opt_error(unknown_option(M:H)).
 
 opt_bool_type(Opt, Name, Value, M) :-
@@ -527,6 +574,11 @@ opt_convert(file(Access), Spec, Value) :-
 	;   opt_error(access_file(Spec, Access))
 	)
     ).
+opt_convert(directory, Spec, Value) :-
+    prolog_to_os_filename(Value, Spec).
+opt_convert(directory(Access), Spec, Value) :-
+    prolog_to_os_filename(Value, Spec),
+    access_directory(Value, Access).
 opt_convert(term, Spec, Value) :-
     term_string(Value, Spec, []).
 opt_convert(term(Options), Spec, Value) :-
@@ -536,17 +588,36 @@ opt_convert(term(Options), Spec, Value) :-
     ;   Value = Term
     ).
 
+access_directory(Dir, read) =>
+    exists_directory(Dir),
+    access_file(Dir, read).
+access_directory(Dir, write) =>
+    exists_directory(Dir),
+    access_file(Dir, write).
+access_directory(Dir, create) =>
+    (   exists_directory(Dir)
+    ->  access_file(Dir, write)
+    ;   \+ exists_file(Dir),
+        file_directory_name(Dir, Parent),
+        exists_directory(Parent),
+        access_file(Parent, write)
+    ).
+
 to_bool(true,    true).
 to_bool('True',  true).
 to_bool('TRUE',  true).
 to_bool(on,      true).
 to_bool('On',    true).
+to_bool(yes,     true).
+to_bool('Yes',   true).
 to_bool('1',     true).
 to_bool(false,   false).
 to_bool('False', false).
 to_bool('FALSE', false).
 to_bool(off,     false).
 to_bool('Off',   false).
+to_bool(no,      false).
+to_bool('No',    false).
 to_bool('0',     false).
 
 %!  argv_usage(:Level) is det.
@@ -588,6 +659,7 @@ prolog:message(opt_usage(M)) -->
 usage(M) -->
     usage_text(M:header),
     usage_line(M),
+    usage_text(M:description),
     usage_options(M),
     usage_text(M:footer).
 
@@ -600,16 +672,30 @@ usage_text(M:Which) -->
     { in(M:opt_help(help(Which), Help))
     },
     !,
-    (   {Which == header}
-    ->  user_text(M:Help), [nl]
-    ;   [nl], user_text(M:Help)
+    (   {Which == header ; Which == description}
+    ->  user_text(M:Help), [nl, nl]
+    ;   [nl, nl], user_text(M:Help)
     ).
 usage_text(_) -->
     [].
 
 user_text(M:Entries) -->
     { is_list(Entries) },
+    !,
     sequence(help_elem(M), Entries).
+:- if(current_predicate(print_markdown/2)).
+user_text(_:md(Help)) -->
+    !,
+    { with_output_to(string(String),
+                     ( current_output(S),
+                       set_stream(S, tty(true)),
+                       print_markdown(Help, []))) },
+    [ '~s'-[String] ].
+:- else.
+user_text(_:md(Help)) -->
+    !,
+    [ '~w'-[Help] ].
+:- endif.
 user_text(_:Help) -->
     [ '~w'-[Help] ].
 
@@ -621,14 +707,26 @@ help_elem(_M, Elem) -->
     [ Elem ].
 
 usage_line(M) -->
+    { findall(Help, in(M:opt_help(help(usage), Help)), HelpLines)
+    },
     [ ansi(comment, 'Usage: ', []) ],
-    cmdline(M),
-    (   {in(M:opt_help(help(usage), Help))}
-    ->  user_text(M:Help)
-    ;   [ ' [options]'-[] ]
+    (   {HelpLines == []}
+    ->  cmdline(M), [ ' [options]'-[] ]
+    ;   sequence(usage_line(M), [nl], HelpLines)
     ),
     [ nl, nl ].
 
+usage_line(M, Help) -->
+    [ '~t~8|'-[] ],
+    cmdline(M),
+    user_text(M:Help).
+
+cmdline(_M) -->
+    { current_prolog_flag(app_name, App),
+      !,
+      current_prolog_flag(os_argv, [Argv0|_])
+    },
+    cmdarg(Argv0), [' '-[], ansi(bold, '~w', [App])].
 cmdline(_M) -->
     { current_prolog_flag(associated_file, AbsFile),
       file_base_name(AbsFile, Base),
@@ -664,12 +762,21 @@ usage_options(M) -->
     { findall(Opt, get_option(M, Opt), Opts),
       maplist(options_width, Opts, OptWidths),
       max_list(OptWidths, MaxOptWidth),
-      catch(tty_size(_, Width), _, Width = 80),
+      tty_width(Width),
       OptColW is min(MaxOptWidth, 30),
       HelpColW is Width-4-OptColW
     },
     [ ansi(comment, 'Options:', []), nl ],
     sequence(opt_usage(OptColW, HelpColW), [nl], Opts).
+
+% Just  catch/3  is   enough,   but    dependency   tracking   in  e.g.,
+% list_undefined/0 still considers this a missing dependency.
+:- if(current_predicate(tty_size/2)).
+tty_width(Width) :-
+     catch(tty_size(_, Width), _, Width = 80).
+:- else.
+tty_width(80).
+:- endif.
 
 opt_usage(OptColW, HelpColW, opt(_Name, Type, Short, Long, Help, Meta)) -->
     options(Type, Short, Long, Meta),
@@ -730,7 +837,8 @@ options(Type, ShortOpt, LongOpts, Meta) -->
     sequence(option(Type, Meta), [', '-[]], Opts).
 
 option(boolean, _, Opt) -->
-    opt(Opt).
+    opt(Opt),
+    !.
 option(_Type, [Meta], Opt) -->
     \+ { short_opt(Opt) },
     !,
@@ -800,6 +908,8 @@ get_option(M, opt(Name, TypeName, Short, Long, Help, Meta)) :-
     ),
     (   in(M:opt_meta(Name, Meta0))
     ->  true
+    ;   type_name(TypeT, Meta0)
+    ->  true
     ;   upcase_atom(TypeName, Meta0)
     ),
     (   \+ type_bool(TypeT, _),
@@ -807,6 +917,10 @@ get_option(M, opt(Name, TypeName, Short, Long, Help, Meta)) :-
     ->  Meta = [Meta0]
     ;   Meta = Meta0
     ).
+
+type_name(oneof(Values), Name) :-
+    atomics_to_string(Values, ",", S0),
+    format(atom(Name), '{~w}', [S0]).
 
 option_type(Name, Pairs, Type) :-
     pairs_values(Pairs, Types),
@@ -946,20 +1060,75 @@ cli_parse_debug_options([H|T0], Opts) :-
 cli_parse_debug_options([H|T0], [H|T]) :-
     cli_parse_debug_options(T0, T).
 
+%!  cli_debug_opt_type(-Flag, -Option, -Type).
+%!  cli_debug_opt_help(-Option, -Message).
+%!  cli_debug_opt_meta(-Option, -Arg).
+%
+%   Implements  opt_type/3,  opt_help/2   and    opt_meta/2   for  debug
+%   arguments. Applications that wish to  use   these  features can call
+%   these predicates from their own hook.  Fot example:
+%
+%   ```
+%   opt_type(..., ..., ...).	% application types
+%   opt_type(Flag, Opt, Type) :-
+%       cli_debug_opt_type(Flag, Opt, Type).
+%   % similar for opt_help/2 and opt_meta/2
+%
+%   main(Argv) :-
+%       argv_options(Argv, Positional, Options0),
+%       cli_parse_debug_options(Options0, Options),
+%       ...
+%   ```
+
+cli_debug_opt_type(debug,       debug,       string).
+cli_debug_opt_type(spy,         spy,         string).
+cli_debug_opt_type(gspy,        gspy,        string).
+cli_debug_opt_type(interactive, interactive, boolean).
+
+cli_debug_opt_help(debug,
+                   "Call debug(Topic).  See debug/1 and debug/3. \c
+                    Multiple topics may be separated by : or ;").
+cli_debug_opt_help(spy,
+                   "Place a spy-point on Predicate. \c
+                    Multiple topics may be separated by : or ;").
+cli_debug_opt_help(gspy,
+                   "As --spy using the graphical debugger.  See tspy/1 \c
+                    Multiple topics may be separated by `;`").
+cli_debug_opt_help(interactive,
+                   "Start the Prolog toplevel after main/1 completes.").
+
+cli_debug_opt_meta(debug, 'TOPICS').
+cli_debug_opt_meta(spy,   'PREDICATES').
+cli_debug_opt_meta(gspy,  'PREDICATES').
+
+:- meta_predicate
+    spy_from_string(1, +).
+
 debug_option(interactive(true)) :-
     asserta(interactive).
-debug_option(debug(TopicS)) :-
+debug_option(debug(Spec)) :-
+    split_string(Spec, ";", "", Specs),
+    maplist(debug_from_string, Specs).
+debug_option(spy(Spec)) :-
+    split_string(Spec, ";", "", Specs),
+    maplist(spy_from_string(spy), Specs).
+debug_option(gspy(Spec)) :-
+    split_string(Spec, ";", "", Specs),
+    maplist(spy_from_string(cli_gspy), Specs).
+
+debug_from_string(TopicS) :-
     term_string(Topic, TopicS),
     debug(Topic).
-debug_option(spy(Atom)) :-
-    atom_pi(Atom, PI),
-    spy(PI).
-debug_option(gspy(Atom)) :-
-    atom_pi(Atom, PI),
-    (   exists_source(library(thread_util))
+
+spy_from_string(Pred, Spec) :-
+    atom_pi(Spec, PI),
+    call(Pred, PI).
+
+cli_gspy(PI) :-
+    (   exists_source(library(threadutil))
     ->  use_module(library(threadutil), [tspy/1]),
 	Goal = tspy(PI)
-    ;   exists_source(library(guitracer))
+    ;   exists_source(library(gui_tracer))
     ->  use_module(library(gui_tracer), [gspy/1]),
 	Goal = gspy(PI)
     ;   Goal = spy(PI)
@@ -1027,3 +1196,5 @@ prolog:called_by(argv_options(_,_,_),
 		   opt_help(_,_),
 		   opt_meta(_,_)
 		 ]).
+prolog:called_by(argv_options(_,_,_,_), Called) :-
+    prolog:called_by(argv_options(_,_,_), Called).

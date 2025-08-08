@@ -34,40 +34,75 @@ endif()
 
 # Using gdwarf-2 -g3 allows using macros in gdb, which helps a lot
 # when debugging the Prolog internals.
+# For GCC, using -O3 makes the program bigger and slower.  -O2 is
+# better.  Possibly tuning individual flags can reach better results.
+
+set(SANITIZE "address" CACHE STRING
+  "Value for -fsanitize when using -DCMAKE_BUILD_TYPE=Sanitize (address)")
+
+if(EMSCRIPTEN)
+set(GCC_GFLAGS "-g -gsource-map")
+else()
+set(GCC_GFLAGS "-gdwarf-2 -g3")
+endif()
 if(CMAKE_COMPILER_IS_GNUCC)
-  set(CMAKE_C_FLAGS_DEBUG "-DO_DEBUG -DO_DEBUG_ATOMGC -O0 -gdwarf-2 -g3"
+  if($ENV{CFLAGS})
+    string(REGEX MATCH "-O" match $ENV{CFLAGS})
+  endif()
+  if(NOT match)
+    set(GCC_OPTFLAGS -O2)
+  endif()
+
+  set(CMAKE_C_FLAGS_DEBUG "-DO_DEBUG -DO_DEBUG_ATOMGC -O0 ${GCC_GFLAGS} $ENV{CFLAGS}"
       CACHE STRING "CFLAGS for a Debug build" FORCE)
-  set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 -gdwarf-2 -g3"
+  set(CMAKE_C_FLAGS_RELWITHDEBINFO "${GCC_OPTFLAGS} ${GCC_GFLAGS} $ENV{CFLAGS}"
       CACHE STRING "CFLAGS for a RelWithDebInfo build" FORCE)
-  set(CMAKE_C_FLAGS_RELEASE "-O2"
+  set(CMAKE_C_FLAGS_RELEASE "${GCC_OPTFLAGS} $ENV{CFLAGS}"
       CACHE STRING "CFLAGS for a Release build" FORCE)
-  set(CMAKE_C_FLAGS_PGO "-O2 -gdwarf-2 -g3"
+  set(CMAKE_C_FLAGS_PGO "${GCC_OPTFLAGS} ${GCC_GFLAGS} $ENV{CFLAGS}"
       CACHE STRING "CFLAGS for a PGO build" FORCE)
   set(CMAKE_C_FLAGS_SANITIZE
-      "-O0 -gdwarf-2 -g3 -fsanitize=address -fno-omit-frame-pointer"
+      "-O0 ${GCC_GFLAGS} -fsanitize=${SANITIZE} -fno-omit-frame-pointer $ENV{CFLAGS}"
       CACHE STRING "CFLAGS for a Sanitize build" FORCE)
-  set(CMAKE_CXX_FLAGS_DEBUG "-DO_DEBUG -O0 -gdwarf-2 -g3"
+
+  set(CMAKE_CXX_FLAGS_DEBUG "-DO_DEBUG -O0 ${GCC_GFLAGS} $ENV{CXXFLAGS}"
       CACHE STRING "CFLAGS for a Debug build" FORCE)
+  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${GCC_OPTFLAGS} ${GCC_GFLAGS} $ENV{CXXFLAGS}"
+      CACHE STRING "CFLAGS for a RelWithDebInfo build" FORCE)
+  set(CMAKE_CXX_FLAGS_RELEASE "${GCC_OPTFLAGS} $ENV{CXXFLAGS}"
+      CACHE STRING "CFLAGS for a Release build" FORCE)
   set(CMAKE_CXX_FLAGS_SANITIZE
-      "-O0 -gdwarf-2 -g3 -fsanitize=address -fno-omit-frame-pointer"
+      "-O0 ${GCC_GFLAGS} -fsanitize=${SANITIZE} -fno-omit-frame-pointer $ENV{CXXFLAGS}"
       CACHE STRING "CFLAGS for a Sanitize build" FORCE)
 elseif(CMAKE_C_COMPILER_ID STREQUAL Clang)
-  set(CMAKE_C_FLAGS_DEBUG "-DO_DEBUG -gdwarf-2 -g3"
+  set(CMAKE_C_FLAGS_DEBUG "-DO_DEBUG ${GCC_GFLAGS} $ENV{CFLAGS}"
       CACHE STRING "CFLAGS for a Debug build" FORCE)
   set(CMAKE_C_FLAGS_SANITIZE
-      "-gdwarf-2 -g3 -fsanitize=address -O1 -fno-omit-frame-pointer"
+      "${GCC_GFLAGS} -fsanitize=${SANITIZE} -O1 -fno-omit-frame-pointer $ENV{CFLAGS}"
       CACHE STRING "CFLAGS for a Sanitize build" FORCE)
-  set(CMAKE_CXX_FLAGS_DEBUG "-DO_DEBUG -gdwarf-2 -g3"
+
+  set(CMAKE_CXX_FLAGS_DEBUG "-DO_DEBUG ${GCC_GFLAGS} $ENV{CXXFLAGS}"
       CACHE STRING "CFLAGS for a Debug build" FORCE)
+  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${GCC_OPTFLAGS} ${GCC_GFLAGS} $ENV{CXXFLAGS}"
+      CACHE STRING "CFLAGS for a RelWithDebInfo build" FORCE)
+  set(CMAKE_CXX_FLAGS_RELEASE "${GCC_OPTFLAGS} $ENV{CXXFLAGS}"
+      CACHE STRING "CFLAGS for a Release build" FORCE)
   set(CMAKE_CXX_FLAGS_SANITIZE
-      "-gdwarf-2 -g3 -fsanitize=address -O1 -fno-omit-frame-pointer"
+      "${GCC_GFLAGS} -fsanitize=${SANITIZE} -O1 -fno-omit-frame-pointer $ENV{CXXFLAGS}"
       CACHE STRING "CFLAGS for a Sanitize build" FORCE)
 elseif(CMAKE_C_COMPILER_ID STREQUAL AppleClang)
-  set(CMAKE_C_FLAGS_DEBUG "-DO_DEBUG -gdwarf-2 -g3"
+  set(CMAKE_C_FLAGS_DEBUG "-DO_DEBUG ${GCC_GFLAGS} $ENV{CXXFLAGS}"
       CACHE STRING "CFLAGS for a Debug build" FORCE)
-  set(CMAKE_CXX_FLAGS_DEBUG "-DO_DEBUG -gdwarf-2 -g3"
+  set(CMAKE_CXX_FLAGS_DEBUG "-DO_DEBUG ${GCC_GFLAGS} $ENV{CXXFLAGS}"
       CACHE STRING "CFLAGS for a Debug build" FORCE)
 elseif(EMSCRIPTEN)
+  set(CMAKE_C_FLAGS_DEBUG "-DO_DEBUG ${GCC_GFLAGS} $ENV{CXXFLAGS}"
+      CACHE STRING "CFLAGS for a Debug build" FORCE)
+  set(CMAKE_CXX_FLAGS_DEBUG "-DO_DEBUG ${GCC_GFLAGS} $ENV{CXXFLAGS}"
+      CACHE STRING "CFLAGS for a Debug build" FORCE)
+  set(CMAKE_EXE_LINKER_FLAGS "-sASSERTIONS"
+      CACHE STRING "LDFLAGS for a Debug build" FORCE)
+elseif(MSVC)
 else()
   message("Unknown C compiler.  ${CMAKE_C_COMPILER_ID}")
 endif()

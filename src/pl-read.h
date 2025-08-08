@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2022, University of Amsterdam
+    Copyright (c)  1985-2023, University of Amsterdam
                               VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -66,15 +66,17 @@ strnumstat	str_number(const unsigned char *string,
 			   unsigned char **end,
 			   Number value, int flags);
 const char *	str_number_error(strnumstat rc);
-word		pl_raw_read(term_t term);
-word		pl_raw_read2(term_t stream, term_t term);
-word		pl_read(term_t term);
-word		pl_read2(term_t stream, term_t term);
+foreign_t	pl_raw_read(term_t term);
+foreign_t	pl_raw_read2(term_t stream, term_t term);
+foreign_t	pl_read(term_t term);
+foreign_t	pl_read2(term_t stream, term_t term);
 void		initCharConversion(void);
 foreign_t	pl_char_conversion(term_t in, term_t out);
 foreign_t	pl_current_char_conversion(term_t in, term_t out, control_t h);
 int		read_clause(IOSTREAM *s, term_t term, term_t options);
 
 #undef LDFUNC_DECLARATIONS
+
+const char *	utf8_skip_blanks(const char *in);
 
 #endif /*_PL_READ_H*/

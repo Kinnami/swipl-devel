@@ -251,7 +251,7 @@ while loop, either use a goto or use the PASS_AS_LD macro instead.
     { assert(LD == other_ld);
       assert(get_current_ld() == other_ld);
       break;
-      assert(FALSE);
+      assert(false);
     }
     assert(LD == my_ld);
 
@@ -326,6 +326,10 @@ PL_local_data_t* __FIND_LD(PL_local_data_t *pl_ld, control_t pl_ctx, PL_local_da
 #ifdef __GNUC__
 # pragma push_macro("__FIND_LD")
 # pragma pop_macro("__FIND_LD")
+#endif
+
+#ifndef __GNUC__
+#define __has_attribute(x) 0
 #endif
 
 #if defined(__GNUC__) && __has_attribute(error)
@@ -424,7 +428,7 @@ extern PL_local_data_t* no_local_ld(void);
 #define WITH_LD(ld) \
 	for (PL_local_data_t *__PL_ld = (ld), *__loopctr = NULL; \
 	     !__loopctr; \
-	     __loopctr++)
+	     __loopctr = (PL_local_data_t*) 1)
 /* Passing an alternate LD to a called function. This uses the same mechanism
  * as DECL_LD, but takes it one step further. _VE_PASSLD below is a macro that
  * does not exist, but when DECL_LDFUNC() pastes __VOID_EMPTY_ to the beginning
@@ -477,28 +481,38 @@ is also printed if stdio is not available.
 #include "pl-debug.h"
 
 #if O_DEBUG
-#define DEBUG(n, g)	do \
-			{ if (DEBUGGING(n)) \
-			  { ENTER_DEBUG(n); g; EXIT_DEBUG(n); } \
-			} while(0)
-#define ENTER_DEBUG(n)	pl_internaldebugstatus_t \
-			  __orig_ld_debug = GLOBAL_LD->internal_debug, \
-			  __new_ld_debug = GLOBAL_LD->internal_debug = \
-			  (pl_internaldebugstatus_t) \
-			  { .channel = DEBUGGING(n) ? prolog_debug_topic_name(n) : NULL, \
-			    .depth = __orig_ld_debug.depth + 1, \
-			  }
-#define EXIT_DEBUG(n)	GLOBAL_LD->internal_debug = \
-			( GLOBAL_LD->internal_debug.depth != __new_ld_debug.depth \
-			? Sdprintf("DEBUG stack depth mismatch! %d != %d\n", GLOBAL_LD->internal_debug.depth, __new_ld_debug.depth) \
-			: 1 \
-			) ? __orig_ld_debug : __orig_ld_debug
+#define DEBUG(n, g) \
+  do							      \
+  { if (DEBUGGING(n))					      \
+    { PL_local_data_t *__dbg_ld = GLOBAL_LD;		      \
+      if ( __dbg_ld )					      \
+      { ENTER_DEBUG(__dbg_ld, n); g; EXIT_DEBUG(__dbg_ld, n); \
+      } else						      \
+      { g;						      \
+      }							      \
+    }							      \
+  } while(0)
+#define ENTER_DEBUG(ld, n)					 \
+  pl_internaldebugstatus_t					 \
+  __orig_ld_debug = ld->internal_debug,				 \
+    __new_ld_debug = ld->internal_debug =			 \
+    (pl_internaldebugstatus_t)					 \
+  { .channel = DEBUGGING(n) ? prolog_debug_topic_name(n) : NULL, \
+    .depth = __orig_ld_debug.depth + 1,				 \
+  }
+#define EXIT_DEBUG(ld, n)						\
+  ld->internal_debug =							\
+    ( GLOBAL_LD->internal_debug.depth != __new_ld_debug.depth		\
+      ? Sdprintf("DEBUG stack depth mismatch! %d != %d\n",		\
+		 GLOBAL_LD->internal_debug.depth, __new_ld_debug.depth) \
+      : 1								\
+      ) ? __orig_ld_debug : __orig_ld_debug
 #define DEBUGGING(n)	((n) <= DBG_LEVEL9 ? GD->debug_level >= (n) : \
 			 (GD->debug_topics && true_bit(GD->debug_topics, n)))
-#define WITH_DEBUG_FOR(n) for \
-			( ENTER_DEBUG(n); \
-			  __orig_ld_debug.depth >= 0; \
-			  EXIT_DEBUG(n), __orig_ld_debug.depth = -1 )
+#define WITH_DEBUG_FOR(n) for	  \
+    ( ENTER_DEBUG(GLOBAL_LD, n);	  \
+      __orig_ld_debug.depth >= 0; \
+      EXIT_DEBUG(GLOBAL_LD, n), __orig_ld_debug.depth = -1 )
 #define IF_DEBUGGING(n)	if (DEBUGGING(n)) WITH_DEBUG_FOR(n)
 
 /* We want to use the version of Sdprintf with the debug channel, if possible */
@@ -508,9 +522,9 @@ int Sdprintf_ex(const char *channel, const char *file, int line, const char *fm,
 
 #else
 #define DEBUG(a, b) ((void)0)
-#define ENTER_DEBUG(n) ;
-#define EXIT_DEBUG(n) ;
-#define DEBUGGING(n) FALSE
+#define ENTER_DEBUG(ld, n) ;
+#define EXIT_DEBUG(ld, n) ;
+#define DEBUGGING(n) false
 #define WITH_DEBUG_FOR(n) /* empty */
 #define IF_DEBUGGING(n) if (0)
 #endif
@@ -534,9 +548,9 @@ typedef enum
 } frg_code;
 
 struct foreign_context
-{ uintptr_t		context;	/* context value */
+{ struct PL_local_data *engine;		/* invoking engine */
   frg_code		control;	/* FRG_* action */
-  struct PL_local_data *engine;		/* invoking engine */
+  uintptr_t		context;	/* context value */
   struct definition    *predicate;	/* called Prolog predicate */
 };
 
@@ -546,7 +560,7 @@ struct foreign_context
 #define YIELD_PTR	0x01		/* Returned a pointer */
 #define REDO_INT	0x02		/* Returned an integer */
 
-#define ForeignRedoIntVal(v)	(((uintptr_t)((v)<<FRG_REDO_BITS))|REDO_INT)
+#define ForeignRedoIntVal(v)	(((uintptr_t)((uintptr_t)(v)<<FRG_REDO_BITS))|REDO_INT)
 #define ForeignRedoPtrVal(v)	(((uintptr_t)(v))|REDO_PTR)
 #define ForeignYieldPtrVal(v)	(((uintptr_t)(v))|YIELD_PTR)
 
@@ -577,8 +591,8 @@ non-deterministic predicates. The implementation returns   using  one of
 these  constructs.  The  `Redo'   variations    are   only   allowed  if
 PL_FA_NONDETERMINISTIC is present in `flags'.
 
-    * return FALSE
-    * return TRUE
+    * return false
+    * return true
     * ForeignRedoInt(intptr_t val)
     * ForeignRedoPtr(void *ptr)
 
@@ -594,7 +608,7 @@ EndPredDefs
 
 #define PRED_IMPL(name, arity, fname, flags) \
         foreign_t \
-        pl_ ## fname ## arity ## _va(term_t PL__t0, int PL__ac, \
+        pl_ ## fname ## arity ## _va(term_t PL__t0, size_t PL__ac, \
 				     control_t PL__ctx)
 
 #define Arg(N)  (PL__t0+((n)-1))

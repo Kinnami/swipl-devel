@@ -1,11 +1,9 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
+    E-mail:        jan@swi-prolog.org
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2022, University of Amsterdam
-                         VU University Amsterdam
-		         CWI, Amsterdam
+    Copyright (c)  2023-2024, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -43,8 +41,7 @@
 #include "os/pl-table.h"
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-Record coverage data by intercepting the tracer.   We  have two types of
-coverage:
+Record coverage data. We  have two types of coverage:
 
   - A program counter (PC)
     This is used to record calls at this PC as well as exits to
@@ -68,62 +65,127 @@ typedef struct cov_obj
 } cov_obj;
 
 
+static void
+free_cov_symbol(table_key_t name, table_value_t value)
+{ cov_obj *cov = val2ptr(value);
+  (void)name;
+
+  PL_unregister_atom(cov->cref);
+  PL_free(cov);
+}
+
+static coverage *
+newCoverageData(void)
+{ coverage *cov = malloc(sizeof(*cov));
+
+  if ( cov )
+  { memset(cov, 0, sizeof(*cov));
+
+    TablePP t = newHTablePP(1024);
+    if ( t )
+    { t->free_symbol = free_cov_symbol;
+      cov->table      = t;
+      cov->references = 1;
+      cov->flags      = COV_TRACK_THREADS;
+    } else
+    { free(cov);
+      cov = NULL;
+    }
+  }
+
+  return cov;
+}
+
+
+coverage *
+share_coverage_data(coverage *cov)
+{ if ( cov )
+    ATOMIC_INC(&cov->references);
+
+  return cov;
+}
+
+
+static void
+unshare_coverage_data(coverage *cov)
+{ if ( ATOMIC_DEC(&cov->references)  == 0 )
+  { destroyHTablePP(cov->table);
+    free(cov);
+  }
+}
+
+
 static int
 running_static_predicate(LocalFrame fr)
 { Definition def = fr->predicate;
 
-  return false(def, P_DYNAMIC|P_FOREIGN);
+  return isoff(def, P_DYNAMIC|P_FOREIGN);
 }
+
+static cov_obj*
+pc_call_site(coverage *cov, const Clause cl, Code pc)
+{ cov_obj *obj = lookupHTablePP(cov->table, pc);
+
+  if ( !obj )
+  { obj = PL_malloc(sizeof(*obj));
+    memset(obj, 0, sizeof(*obj));
+    obj->type = COV_PC;
+    obj->cref = lookup_clref(cl);
+    obj->pc   = pc;
+
+    cov_obj *obj2 = addHTablePP(cov->table, pc, obj);
+    if ( obj2 != obj )
+    { PL_unregister_atom(obj->cref);
+      PL_free(obj);
+      obj = obj2;
+    }
+  }
+
+  return obj;
+}
+
 
 static cov_obj *
 call_site(LocalFrame fr)
 { LocalFrame parent = fr->parent;
+  coverage *cov;
 
-  if ( running_static_predicate(parent) )
-  { void *key = (void*)fr->programPointer;
-    cov_obj *cov = lookupHTable(LD->coverage.table, key);
-
-    if ( !cov )
-    { cov = PL_malloc(sizeof(*cov));
-      memset(cov, 0, sizeof(*cov));
-      cov->type = COV_PC;
-      cov->cref = lookup_clref(parent->clause->value.clause);
-      cov->pc   = fr->programPointer;
-
-      cov_obj *cov2 = addHTable(LD->coverage.table, key, cov);
-      if ( cov2 != cov )
-      { PL_unregister_atom(cov->cref);
-	PL_free(cov);
-	cov = cov2;
-      }
-    }
-
-    return cov;
-  }
+  if ( (cov=LD->coverage.data) &&
+       running_static_predicate(parent) )
+    return pc_call_site(cov, parent->clause->value.clause, fr->programPointer);
 
   return NULL;
 }
 
 static cov_obj *
-clause_site(ClauseRef cref)
-{ void    *key = cref->value.clause;
-  cov_obj *cov = lookupHTable(LD->coverage.table, key);
+clause_site(coverage *cov, Clause cl)
+{ if ( cov )
+  { cov_obj *obj = lookupHTablePP(cov->table, cl);
 
-  if ( !cov )
-  { cov = PL_malloc(sizeof(*cov));
-    memset(cov, 0, sizeof(*cov));
-    cov->type = COV_CLAUSE;
-    cov->cref = lookup_clref(cref->value.clause);
+    if ( !obj )
+    { obj = PL_malloc(sizeof(*obj));
+      memset(obj, 0, sizeof(*obj));
+      obj->type = COV_CLAUSE;
+      obj->cref = lookup_clref(cl);
 
-    cov_obj *cov2 = addHTable(LD->coverage.table, key, cov);
-    if ( cov2 != cov )
-    { PL_unregister_atom(cov->cref);
-      PL_free(cov);
-      cov = cov2;
+      cov_obj *obj2 = addHTablePP(cov->table, cl, obj);
+      if ( obj2 != obj )
+      { PL_unregister_atom(obj->cref);
+	PL_free(obj);
+	obj = obj2;
+      }
     }
+
+    return obj;
   }
 
-  return cov;
+  return NULL;
+}
+
+
+static cov_obj *
+clref_site(ClauseRef cref)
+{ return clause_site(LD->coverage.data, cref->value.clause);
 }
 
 
@@ -152,11 +214,11 @@ record_coverage(LocalFrame fr, int port)
       break;
     case UNIFY_PORT:
       if ( running_static_predicate(fr) )
-	bump(clause_site(fr->clause), CALL_PORT);
+	bump(clref_site(fr->clause), CALL_PORT);
       break;
     case EXIT_PORT:
       if ( running_static_predicate(fr) )
-	bump(clause_site(fr->clause), port);
+	bump(clref_site(fr->clause), port);
       bump(call_site(fr), port);
       break;
     default:
@@ -169,46 +231,91 @@ record_coverage(LocalFrame fr, int port)
 		 *	   PROLOG BINDING	*
 		 *******************************/
 
+/** '$cov_add'(+Site, +EnterCount, +ExitCount) is det.
+ *
+ *  Add EnterCount and ExitCount to the statistics for Site.  Site
+ *  is either call_site(ClauseRef, PC) or clause(ClauseRef).
+ */
+
+static
+PRED_IMPL("$cov_add", 3, cov_add, 0)
+{ PRED_LD
+  int64_t enter, exit;
+  Clause cl;
+  int64_t pc_offset = -1;
+  term_t tmp = PL_new_term_ref();
+
+  if ( !PL_get_int64_ex(A2, &enter) ||
+       !PL_get_int64_ex(A3, &exit) )
+    return false;
+
+  if ( PL_is_functor(A1, FUNCTOR_call_site2) )
+  { _PL_get_arg(2, A1, tmp);
+    if ( !PL_get_int64_ex(tmp, &pc_offset) )
+      return false;
+  } else if ( !PL_is_functor(A1, FUNCTOR_clause1) )
+  { return PL_domain_error("cov_data", A1);
+  }
+
+  _PL_get_arg(1, A1, tmp);
+  int rc;
+  if ( (rc=PL_get_clref(tmp, &cl)) != true )
+  { if ( rc == -1 )
+      return PL_existence_error("db_reference", tmp);
+  }
+
+  cov_obj *obj;
+  coverage *cov = LD->coverage.data;
+
+  if ( !cov )
+    cov = LD->coverage.data = newCoverageData();
+
+  if ( pc_offset != -1 )
+    obj = pc_call_site(cov, cl, cl->codes+pc_offset);
+  else
+    obj = clause_site(cov, cl);
+
+  if ( obj )
+  { ATOMIC_ADD(&obj->enter, enter);
+    ATOMIC_ADD(&obj->exits, exit);
+  }
+
+  return true;
+}
+
+
 static int
 unify_cov(term_t t, const cov_obj *cov)
 { switch( cov->type )
   { case COV_PC:
     { ClauseRef cref = clause_clref(cov->cref);
-      Clause    cl   = cref->value.clause;
 
       if ( cref )
-      { term_t  pi = 0;
+      { Clause  cl = cref->value.clause;
 	int64_t pc = cov->pc - cl->codes;
 
-	if ( (pi=PL_new_term_ref()) &&
-	     unify_definition(MODULE_system, pi, cl->predicate,
-			      0, GP_NAMEARITY) &&
-	     PL_unify_term(t, PL_FUNCTOR, FUNCTOR_call_site3,
-		                PL_ATOM,  cov->cref,
-		                PL_INT64, pc,
-		                PL_TERM,  pi) )
-	{ PL_reset_term_refs(pi);
-	  return TRUE;
-	}
+	return PL_unify_term(t, PL_FUNCTOR, FUNCTOR_call_site2,
+				  PL_ATOM,  cov->cref,
+				  PL_INT64, pc);
       }
-      return FALSE;
+      return false;
     }
     case COV_CLAUSE:
       return PL_unify_term(t, PL_FUNCTOR, FUNCTOR_clause1,
-			        PL_ATOM, cov->cref);
+				PL_ATOM, cov->cref);
     default:
       assert(0);
-      return FALSE;
+      return false;
   }
 }
 
 
 /** '$cov_data'(?Obj, -Entered, -Exited) is nondet.
  *
- * Read  coverage  information.  Obj  is  one  of  clause(ClauseRef)  or
- * call_site(ClauseRef, PC, PI). Partial information in   Obj is used to
- * speedup the process. Deterministic and  fast   lookup  is provided if
- * ClauseRef and (for call_site/3) PC are specified.
+ * Read  coverage information.   Obj  is one  of clause(ClauseRef)  or
+ * call_site(ClauseRef,  PC). Partial  information in  Obj is  used to
+ * speedup the process.  Deterministic and fast lookup  is provided if
+ * ClauseRef and (for call_site/2) PC are specified.
  *
  * Either or both Entered and Exited are non-zero.  Note that Exited may
  * be larger than Entered due to non-determinism.
@@ -238,20 +345,20 @@ save_state(cov_data_state *state)
 
   cov_data_state *s = allocForeignState(sizeof(*s));
   *s = *state;
-  s->saved = TRUE;
+  s->saved = true;
   return s;
 }
 
 static int
 is_candidate(cov_data_state *state, cov_obj *cov)
 { if ( state->type != COV_ANY && cov->type != state->type )
-    return FALSE;
+    return false;
   if ( state->cref && cov->cref != state->cref )
-    return FALSE;
+    return false;
   if ( cov->enter == 0 && cov->exits == 0 )
-    return FALSE;
+    return false;
 
-  return TRUE;
+  return true;
 }
 
 
@@ -263,29 +370,31 @@ PRED_IMPL("$cov_data", 3, cov_data, PL_FA_NONDETERMINISTIC)
 
   switch( CTX_CNTRL )
   { case FRG_FIRST_CALL:
-    { Table cov_table;
+    { TablePP cov_table;
+      coverage *cov;
 
-      if ( !(cov_table = LD->coverage.table) )
-	return FALSE;
+      if ( !(cov=LD->coverage.data) ||
+	   !(cov_table=cov->table) )
+	return false;
 
       if ( PL_is_variable(A1) )
-      {	state->e = newTableEnum(cov_table);
+      {	state->e = newTableEnumPP(cov_table);
 	break;
-      } else if ( PL_is_functor(A1, FUNCTOR_call_site3) )
+      } else if ( PL_is_functor(A1, FUNCTOR_call_site2) )
       {	term_t a = PL_new_term_ref();
 	Clause cl = 0;
 	int64_t pc_offset = -1;
 
 	_PL_get_arg(1, A1, a);
 	if ( !PL_is_variable(a) && !PL_get_clref(a, &cl) )
-	  return FALSE;
+	  return false;
 	_PL_get_arg(2, A1, a);
 	if ( !PL_is_variable(a) && !PL_get_int64_ex(a, &pc_offset) )
-	  return FALSE;
+	  return false;
 
 	if ( cl && pc_offset != -1 )
 	{ Code pc = cl->codes+pc_offset;
-	  cov_obj *cov = lookupHTable(LD->coverage.table, pc);
+	  cov_obj *cov = lookupHTablePP(cov_table, pc);
 
 	  return ( cov &&
 		   unify_cov(A1, cov) &&
@@ -293,7 +402,7 @@ PRED_IMPL("$cov_data", 3, cov_data, PL_FA_NONDETERMINISTIC)
 		   PL_unify_int64(A3, cov->exits) );
 	}
 
-	state->e = newTableEnum(cov_table);
+	state->e = newTableEnumPP(cov_table);
 	if ( cl )
 	  state->cref = lookup_clref(cl);
 	state->type = COV_PC;
@@ -305,15 +414,15 @@ PRED_IMPL("$cov_data", 3, cov_data, PL_FA_NONDETERMINISTIC)
 
 	  if ( PL_get_arg(1, A1, a) &&
 	       PL_get_clref(a, &cl) )
-	  { cov_obj *cov = lookupHTable(cov_table, cl);
+	  { cov_obj *cov = lookupHTablePP(cov_table, cl);
 
 	    return ( cov &&
 		     PL_unify_int64(A2, cov->enter) &&
 		     PL_unify_int64(A3, cov->exits) );
 	  } else
-	    return FALSE;
+	    return false;
 	} else
-	{ state->e = newTableEnum(cov_table);
+	{ state->e = newTableEnumPP(cov_table);
 	  state->type = COV_CLAUSE;
 	  break;
 	}
@@ -325,16 +434,16 @@ PRED_IMPL("$cov_data", 3, cov_data, PL_FA_NONDETERMINISTIC)
     case FRG_CUTTED:
       state = CTX_PTR;
       free_state(state);
-      return TRUE;
+      return true;
     default:
       assert(0);
   }
 
-  void *value;
+  table_value_t value;
   fid_t fid = PL_open_foreign_frame();
 
   while( advanceTableEnum(state->e, NULL, &value ) )
-  { cov_obj *cov = value;
+  { cov_obj *cov = val2ptr(value);
 
     if ( is_candidate(state, cov) &&
 	 unify_cov(A1, cov) &&
@@ -353,7 +462,7 @@ PRED_IMPL("$cov_data", 3, cov_data, PL_FA_NONDETERMINISTIC)
 
   PL_close_foreign_frame(fid);
   free_state(state);
-  return FALSE;
+  return false;
 }
 
 int
@@ -364,12 +473,12 @@ free_coverage_data(PL_local_data_t *ld)
     LD->coverage.active = 0;
     updateAlerted(LD);
 
-    Table t = LD->coverage.table;
-    if ( t && COMPARE_AND_SWAP_PTR(&LD->coverage.table, t, NULL) )
-      destroyHTable(t);
+    coverage *cov = LD->coverage.data;
+    if ( cov && COMPARE_AND_SWAP_PTR(&LD->coverage.data, cov, NULL) )
+      unshare_coverage_data(cov);
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -399,57 +508,66 @@ PRED_IMPL("$cov_reset", 0, cov_reset, 0)
  * being collected this increments the _active_ count.
  */
 
-static void
-free_cov_symbol(void *name, void *value)
-{ cov_obj *cov = value;
-
-  PL_unregister_atom(cov->cref);
-  PL_free(cov);
-}
-
-
 static
-PRED_IMPL("$cov_start", 0, cov_start, 0)
+PRED_IMPL("$cov_start(-Nesting)", 1, cov_start, 0)
 { PRED_LD
 
-  if ( !LD->coverage.table )
-  { Table t = newHTable(1024);
-
-    t->free_symbol = free_cov_symbol;
-    LD->coverage.table = t;
-  }
+  if ( !LD->coverage.data )
+  { if ( !PL_unify_integer(A1, 1) )
+      return false;
+    LD->coverage.data = newCoverageData();
+  } else if ( !PL_unify_integer(A1, LD->coverage.active+1) )
+    return false;
 
   clearPrologRunMode(RUN_MODE_NORMAL);
   LD->coverage.active++;
   updateAlerted(LD);
 
-  return TRUE;
+  return true;
 }
 
 
-/** '$cov_stop' is semidet.
+/** '$cov_stop'(+Nesting) is semidet.
  *
- * Stop collecting coverage data.  Must  be   called  as  many  times as
- * '$cov_start' has been called to actually disable collecting data.
- *
- * Fails silently if no data is being recorded.
+ * Stop collecting  coverage data.   Resets the Nesting  to Nesting-1.
+ * If  this changes  the activation  and the  new nesting  is 0,  data
+ * collection is stopped.
  */
 
 static
-PRED_IMPL("$cov_stop", 0, cov_stop, 0)
+PRED_IMPL("$cov_stop", 1, cov_stop, 0)
 { PRED_LD
 
   if ( !LD->coverage.active )
-    return FALSE;
+    return false;
 
-  if ( --LD->coverage.active == 0 )
-  { if ( !debugstatus.debugging )
-      setPrologRunMode(RUN_MODE_NORMAL);
-    LD->coverage.active = FALSE;
-    updateAlerted(LD);
+  int active;
+  if ( !PL_get_integer_ex(A1, &active) )
+    return false;
+  active--;
+
+  if ( LD->coverage.active != active )
+  { LD->coverage.active = active;
+
+    if ( !active )
+    { if ( !debugstatus.debugging )
+	setPrologRunMode(RUN_MODE_NORMAL);
+      updateAlerted(LD);
+    }
   }
 
-  return TRUE;
+  return true;
+}
+
+
+static
+PRED_IMPL("$cov_active", 1, cov_active, 0)
+{ PRED_LD
+
+  if ( !LD->coverage.active )
+    return false;
+
+  return PL_unify_integer(A1, LD->coverage.active);
 }
 
 
@@ -458,10 +576,12 @@ PRED_IMPL("$cov_stop", 0, cov_stop, 0)
 		 *******************************/
 
 BeginPredDefs(coverage)
-  PRED_DEF("$cov_data",	 3, cov_data,  PL_FA_NONDETERMINISTIC)
-  PRED_DEF("$cov_reset", 0, cov_reset, 0)
-  PRED_DEF("$cov_start", 0, cov_start, 0)
-  PRED_DEF("$cov_stop",	 0, cov_stop,  0)
+  PRED_DEF("$cov_data",	  3, cov_data,   PL_FA_NONDETERMINISTIC)
+  PRED_DEF("$cov_add",    3, cov_add,    0)
+  PRED_DEF("$cov_reset",  0, cov_reset,  0)
+  PRED_DEF("$cov_start",  1, cov_start,  0)
+  PRED_DEF("$cov_stop",	  1, cov_stop,   0)
+  PRED_DEF("$cov_active", 1, cov_active, 0)
 EndPredDefs
 
 #endif /*O_COVERAGE*/

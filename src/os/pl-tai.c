@@ -98,7 +98,7 @@ static void
 do_tzset(void)
 { if ( !GD->date.tz_initialized )
   { tzset();
-    GD->date.tz_initialized = TRUE;
+    GD->date.tz_initialized = true;
   }
 }
 
@@ -212,10 +212,10 @@ get_taia(term_t t, struct taia *taia, double *seconds)
 
     leapsecs_add(&taia->sec, 0);
 
-    return TRUE;
+    return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 
@@ -254,20 +254,10 @@ get_voff_arg(int i, term_t t, term_t a, int *val)
 
   if ( PL_is_variable(a) )
   { *val = NO_UTC_OFFSET;
-    return TRUE;
+    return true;
   } else
   { return PL_get_integer_ex(a, val);
   }
-}
-
-
-static int
-get_float_arg(int i, term_t t, term_t a, double *val)
-{ GET_LD
-
-  _PL_get_arg(i, t, a);
-
-  return PL_get_float_ex(a, val);
 }
 
 
@@ -279,23 +269,46 @@ get_dst_arg(int i, term_t t, term_t a, int *val)
   _PL_get_arg(i, t, a);
   if ( PL_get_atom(a, &name) )
   { if ( name == ATOM_true )
-    { *val = TRUE;
-      return TRUE;
+    { *val = true;
+      return true;
     } else if ( name == ATOM_false )
-    { *val = FALSE;
-      return TRUE;
+    { *val = false;
+      return true;
     } else if ( name == ATOM_minus )
     { *val = -1;
-      return TRUE;
+      return true;
     }
   } else if ( PL_is_variable(a) )
   { *val = -2;
-    return TRUE;
+    return true;
   }
 
   return PL_get_bool_ex(a, val);	/* generate an error */
 }
 
+static int
+get_v_float_arg(int i, term_t t, term_t a, double *val, bool *v, double def)
+{ _PL_get_arg(i, t, a);
+  if ( PL_is_variable(a) && *v )
+  { *val = def;
+    return PL_unify_float(a, def);
+  } else
+  { *v = false;
+    return PL_get_float_ex(a, val);
+  }
+}
+
+static int
+get_v_int_arg(int i, term_t t, term_t a, int *val, bool *v, int def)
+{ _PL_get_arg(i, t, a);
+  if ( PL_is_variable(a) && *v )
+  { *val = def;
+    return PL_unify_integer(a, def);
+  } else
+  { *v = false;
+    return PL_get_integer_ex(a, val);
+  }
+}
 
 static int
 get_ftm(term_t t, ftm *ftm)
@@ -306,12 +319,16 @@ get_ftm(term_t t, ftm *ftm)
   memset(ftm, 0, sizeof(*ftm));
 
   if ( (date9=PL_is_functor(t, FUNCTOR_date9)) )
-  { if ( get_int_arg  (1, t, tmp, &ftm->tm.tm_year) &&
-	 get_int_arg  (2, t, tmp, &ftm->tm.tm_mon)  &&
-	 get_int_arg  (3, t, tmp, &ftm->tm.tm_mday) &&
-	 get_int_arg  (4, t, tmp, &ftm->tm.tm_hour) &&
-	 get_int_arg  (5, t, tmp, &ftm->tm.tm_min)  &&
-	 get_float_arg(6, t, tmp, &ftm->sec)	    &&
+  { bool v = true;
+
+    if ( get_int_arg  (1, t, tmp, &ftm->tm.tm_year) &&
+
+	 get_v_float_arg(6, t, tmp, &ftm->sec, &v, 0.0)      &&
+	 get_v_int_arg  (5, t, tmp, &ftm->tm.tm_min, &v, 0)  &&
+	 get_v_int_arg  (4, t, tmp, &ftm->tm.tm_hour, &v, 0) &&
+	 get_v_int_arg  (3, t, tmp, &ftm->tm.tm_mday, &v, 1) &&
+	 get_v_int_arg  (2, t, tmp, &ftm->tm.tm_mon,  &v, 1) &&
+
 	 get_voff_arg (7, t, tmp, &ftm->utcoff)     &&
 	 get_tz_arg   (8, t, tmp, &ftm->tzname)     &&
 	 get_dst_arg  (9, t, tmp, &ftm->isdst) )
@@ -346,7 +363,7 @@ get_ftm(term_t t, ftm *ftm)
 	  if ( date9 ) /* variable */
 	  { _PL_get_arg(7, t, tmp);
 	    if ( !PL_unify_integer(tmp, ftm->utcoff) )
-	      return FALSE;
+	      return false;
 	  } else
 	  { ftm->utcoff = offset;
 	  }
@@ -358,10 +375,10 @@ get_ftm(term_t t, ftm *ftm)
 	    _PL_get_arg(9, t, tmp);
 	    if ( ftm->isdst < 0 )
 	    { if ( !PL_unify_atom(tmp, ATOM_minus) )
-		return FALSE;
+		return false;
 	    } else
 	    { if ( !PL_unify_bool(tmp, ftm->isdst) )
-		return FALSE;
+		return false;
 	    }
 	  }
 
@@ -370,7 +387,7 @@ get_ftm(term_t t, ftm *ftm)
 	    _PL_get_arg(8, t, tmp);
 	    if ( PL_is_variable(tmp) &&
 		 !PL_unify_atom(tmp, ftm->tzname) )
-	      return FALSE;
+	      return false;
 	  }
 	}
       }
@@ -441,7 +458,7 @@ PRED_IMPL("stamp_date_time", 3, stamp_date_time, 0)
     int weekday, yearday;
     double sec;
     int utcoffset;
-    int done = FALSE;
+    int done = false;
     atom_t alocal;
     atom_t tzatom = ATOM_minus;
     atom_t dstatom = ATOM_minus;
@@ -476,7 +493,7 @@ PRED_IMPL("stamp_date_time", 3, stamp_date_time, 0)
 	  } else
 	  { dstatom    = ATOM_false;
 	  }
-	  done = TRUE;
+	  done = true;
 	}
       } else if ( alocal == ATOM_utc )
       { utcoffset = 0;
@@ -581,7 +598,7 @@ fmt_not_implemented(int c)
   char key[3];
 
   key[0] = '%';
-  key[1] = c;
+  key[1] = (char)c;
   key[2] = 0;
 
   PL_put_atom_chars(t, key);
@@ -665,7 +682,7 @@ format_time(IOSTREAM *fd, const wchar_t *format, ftm *ftm, int posix)
 
   while((c = *format++))
   { int arg = NOARG;
-    int altO = FALSE;
+    int altO = false;
 
     switch(c)
     { case '%':
@@ -826,7 +843,7 @@ format_time(IOSTREAM *fd, const wchar_t *format, ftm *ftm, int posix)
 	  case 'O':
 	  case ':':
 	    if ( format[0] == 'z' )
-	    { altO = TRUE;
+	    { altO = true;
 	      goto fmt_next;
 	    }
 
@@ -952,7 +969,7 @@ format_time(IOSTREAM *fd, const wchar_t *format, ftm *ftm, int posix)
     }
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -966,6 +983,12 @@ Issues:
 	* Sub-second times
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+#ifdef __WINDOWS__
+typedef int32_t stime_t;
+#else
+typedef time_t stime_t;
+#endif
+
 static  foreign_t
 pl_format_time(term_t out, term_t format, term_t time, int posix)
 { struct taia taia;
@@ -973,7 +996,7 @@ pl_format_time(term_t out, term_t format, term_t time, int posix)
   struct ftm tb;
   int weekday, yearday;
   wchar_t *fmt;
-  time_t unixt;
+  stime_t unixt;
   int64_t ut64;
   size_t fmtlen;
   redir_context ctx;
@@ -989,15 +1012,16 @@ pl_format_time(term_t out, term_t format, term_t time, int posix)
 
     leapsecs_sub(&tai);
     ut64 = tai.x - TAI_UTC_OFFSET;
-    unixt = (time_t) ut64;
+    unixt = (stime_t) ut64;
 
     if ( (int64_t)unixt == ut64 )
-    { tb.utcoff = tz_offset();
-      PL_localtime_r(&unixt, &tb.tm);
+    { time_t ta = unixt;
+      tb.utcoff = tz_offset();
+      PL_localtime_r(&ta, &tb.tm);
       tb.sec = (double)tb.tm.tm_sec + modf(tb.stamp, &ip);
       if ( tb.tm.tm_isdst > 0 )
       { tb.utcoff -= 3600;
-	tb.isdst = TRUE;
+	tb.isdst = true;
       }
       tb.tzname = tz_name_as_atom(tb.tm.tm_isdst);
       tb.flags  = HAS_STAMP|HAS_WYDAY;
@@ -1015,10 +1039,10 @@ pl_format_time(term_t out, term_t format, term_t time, int posix)
       tb.utcoff     = 0;
     }
   } else if ( !get_ftm(time, &tb) )
-  { return FALSE;
+  { return false;
   }
 
-  if ( !setupOutputRedirect(out, &ctx, FALSE) )
+  if ( !setupOutputRedirect(out, &ctx, false) )
     fail;
   if ( format_time(ctx.stream, fmt, &tb, posix) )
     return closeOutputRedirect(&ctx);	/* takes care of I/O errors */
@@ -1029,19 +1053,19 @@ pl_format_time(term_t out, term_t format, term_t time, int posix)
 
 static
 PRED_IMPL("format_time", 3, format_time3, 0)
-{ return pl_format_time(A1, A2, A3, FALSE);
+{ return pl_format_time(A1, A2, A3, false);
 }
 
 static
 PRED_IMPL("format_time", 4, format_time4, 0)
 { PRED_LD
-  int posix = FALSE;
+  int posix = false;
   atom_t locale;
 
   if ( !PL_get_atom_ex(A4, &locale) )
-    return FALSE;
+    return false;
   if ( locale == ATOM_posix )
-    posix = TRUE;
+    posix = true;
   else
     return PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_locale, A4);
 

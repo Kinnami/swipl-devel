@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2005-2021, University of Amsterdam
+    Copyright (c)  2005-2024, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
@@ -43,7 +43,7 @@
             predicate_name/2,           % +Head, -Name
             clause_name/2               % +ClauseRef, -Name
           ]).
-:- autoload(library(debug),[debugging/1,debug/3]).
+:- use_module(library(debug),[debugging/1,debug/3]).
 :- autoload(library(listing),[portray_clause/1]).
 :- autoload(library(lists),[append/3]).
 :- autoload(library(occurs),[sub_term/2]).
@@ -95,11 +95,16 @@ clause_info/4 as below can be slow.
 %
 %   Defined options are:
 %
-%     * variable_names(-Names)
-%     Unify Names with the variable names list (Name=Var) as
-%     returned by read_term/3.  This argument is intended for
-%     reporting source locations and refactoring based on
-%     analysis of the compiled code.
+%     - variable_names(-Names)
+%       Unify Names with the variable names list (Name=Var) as
+%       returned by read_term/3.  This argument is intended for
+%       reporting source locations and refactoring based on
+%       analysis of the compiled code.
+%     - head(-Head)
+%     - body(-Body)
+%       Get the head and body as terms.   This is similar to
+%       clause/3, but a seperate call would break the variable
+%       identity.
 
 clause_info(ClauseRef, File, TermPos, NameOffset) :-
     clause_info(ClauseRef, File, TermPos, NameOffset, []).
@@ -259,7 +264,8 @@ try_open_source(File, In) :-
 make_varnames(ReadClause, DecompiledClause, Offsets, Names, Term) :-
     make_varnames_hook(ReadClause, DecompiledClause, Offsets, Names, Term),
     !.
-make_varnames((Head --> _Body), _, Offsets, Names, Bindings) :-
+make_varnames(ReadClause, _, Offsets, Names, Bindings) :-
+    dcg_head(ReadClause, Head),
     !,
     functor(Head, _, Arity),
     In is Arity,
@@ -273,6 +279,11 @@ make_varnames(_, _, Offsets, Names, Bindings) :-
     length(Offsets, L),
     functor(Bindings, varnames, L),
     do_make_varnames(Offsets, Names, Bindings).
+
+dcg_head((Head,_ --> _Body), Head).
+dcg_head((Head   --> _Body), Head).
+dcg_head((Head,_ ==> _Body), Head).
+dcg_head((Head   ==> _Body), Head).
 
 do_make_varnames([], _, _).
 do_make_varnames([N=Var|TO], Names, Bindings) :-
@@ -340,14 +351,12 @@ unify_clause(:<-(Head, Body), (PlHead :- PlBody), M, TermPos0, TermPos) :-
     !,
     pce_method_clause(Head, Body, PlHead, PlBody, M, TermPos0, TermPos).
                                         % Unit test clauses
-unify_clause((TH :- Body),
-             (_:'unit body'(_, _) :- !, Body), _,
-             TP0, TP) :-
-    (   TH = test(_,_)
-    ;   TH = test(_)
-    ),
+unify_clause((TH :- RBody), (CH :- !, CBody), Module, TP0, TP) :-
+    plunit_source_head(TH),
+    plunit_compiled_head(CH),
     !,
-    TP0 = term_position(F,T,FF,FT,[HP,BP]),
+    TP0 = term_position(F,T,FF,FT,[HP,BP0]),
+    ubody(RBody, CBody, Module, BP0, BP),
     TP  = term_position(F,T,FF,FT,[HP,term_position(0,0,0,0,[FF-FT,BP])]).
                                         % module:head :- body
 unify_clause((Head :- Read),
@@ -360,20 +369,28 @@ unify_clause((Head :- Read),
                              ]).
                                         % DCG rules
 unify_clause(Read, Compiled1, Module, TermPos0, TermPos) :-
-    Read = (_ --> Terminal, _),
-    is_list(Terminal),
+    Read = (_ --> Terminal0, _),
+    (   is_list(Terminal0)
+    ->  Terminal = Terminal0
+    ;   string(Terminal0)
+    ->  string_codes(Terminal0, Terminal)
+    ),
     ci_expand(Read, Compiled2, Module, TermPos0, TermPos1),
-    Compiled2 = (DH :- _),
-    functor(DH, _, Arity),
-    DArg is Arity - 1,
-    append(Terminal, _Tail, List),
-    arg(DArg, DH, List),
+    (   dcg_unify_in_head(Compiled2, Compiled3)
+    ->  true
+    ;   Compiled2 = (DH :- _CBody),
+        functor(DH, _, Arity),
+        DArg is Arity - 1,
+        append(Terminal, _Tail, List),
+        arg(DArg, DH, List),
+        Compiled3 = Compiled2
+    ),
     TermPos1 = term_position(F,T,FF,FT,[ HP,
                                          term_position(_,_,_,_,[_,BP])
                                        ]),
     !,
     TermPos2 = term_position(F,T,FF,FT,[ HP, BP ]),
-    match_module(Compiled2, Compiled1, Module, TermPos2, TermPos).
+    match_module(Compiled3, Compiled1, Module, TermPos2, TermPos).
                                                % SSU rules
 unify_clause((Head,RCond => Body), (CHead :- CCondAndBody), Module,
              term_position(F,T,FF,FT,
@@ -397,9 +414,22 @@ unify_clause((Head,RCond => Body), (CHead :- CCondAndBody), Module,
     ).
 unify_clause((Head => Body), Compiled1, Module, TermPos0, TermPos) :-
     !,
-    unify_clause2(Head :- Body, Compiled1, Module, TermPos0, TermPos).
+    unify_clause2((Head :- Body), Compiled1, Module, TermPos0, TermPos).
+unify_clause(Read, Compiled1, Module, TermPos0, TermPos) :-
+    Read = (_ ==> _),
+    ci_expand(Read, Compiled2, Module, TermPos0, TermPos1),
+    Compiled2 \= (_ ==> _),
+    !,
+    unify_clause(Compiled2, Compiled1, Module, TermPos1, TermPos).
 unify_clause(Read, Decompiled, Module, TermPos0, TermPos) :-
     unify_clause2(Read, Decompiled, Module, TermPos0, TermPos).
+
+dcg_unify_in_head((Head :- L1=L2, Body), (Head :- Body)) :-
+    functor(Head, _, Arity),
+    DArg is Arity - 1,
+    arg(DArg, Head, L0),
+    L0 == L1,
+    L1 = L2.
 
 % mkconj, but also unify position info
 mkconj_pos((A,B), term_position(F,T,FF,FT,[PA,PB]), Ex, ExPos, Code, Pos) =>
@@ -427,15 +457,23 @@ unify_clause2(Read, Decompiled, _, TermPos, TermPos) :-
     Read = Decompiled.
 unify_clause2(Read, Compiled1, Module, TermPos0, TermPos) :-
     ci_expand(Read, Compiled2, Module, TermPos0, TermPos1),
-    match_module(Compiled2, Compiled1, Module, TermPos1, TermPos).
-                                        % I don't know ...
-unify_clause2(_, _, _, _, _) :-
+    match_module(Compiled2, Compiled1, Module, TermPos1, TermPos),
+    !.
+unify_clause2(_, _, _, _, _) :-       % I don't know ...
     debug(clause_info, 'Could not unify clause', []),
     fail.
 
 unify_clause_head(H1, H2) :-
     strip_module(H1, _, H),
     strip_module(H2, _, H).
+
+plunit_source_head(test(_,_)) => true.
+plunit_source_head(test(_)) => true.
+plunit_source_head(_) => fail.
+
+plunit_compiled_head(_:'unit body'(_, _)) => true.
+plunit_compiled_head('unit body'(_, _)) => true.
+plunit_compiled_head(_) => fail.
 
 %!  inlined_unification(+BodyRead, +BodyCompiled,
 %!                      -BodyReadOut, -BodyCompiledOut,
@@ -461,7 +499,7 @@ inlined_unification((V=T,RBody0), CBody0,
                     RBody, CBody, RHead, BPos1, BPos),
     inlineable_head_var(RHead, V2),
     V == V2,
-    \+ (CBody0 = (G1,_), G1 \=@= (V=T)) =>
+    \+ (CBody0 = (G1,_), G1 =@= (V=T)) =>
     argpos(2, BPos1, BPos2),
     inlined_unification(RBody0, CBody0, RBody, CBody, RHead, BPos2, BPos).
 inlined_unification((V=_), true,
@@ -588,10 +626,10 @@ a --> { x, y, z }.
 
 %!  ubody(+Read, +Decompiled, +Module, +TermPosRead, -TermPosForDecompiled)
 %
-%   @param Read             Clause read _after_ expand_term/2
-%   @param Decompiled       Decompiled clause
-%   @param Module           Load module
-%   @param TermPosRead      Sub-term positions of source
+%   @arg Read             Clause read _after_ expand_term/2
+%   @arg Decompiled       Decompiled clause
+%   @arg Module           Load module
+%   @arg TermPosRead      Sub-term positions of source
 
 ubody(B, DB, _, P, P) :-
     var(P),                        % TBD: Create compatible pos term?

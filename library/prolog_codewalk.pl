@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2012-2020, VU University Amsterdam
+    Copyright (c)  2012-2025, VU University Amsterdam
                               CWI, Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -38,9 +39,9 @@
             prolog_program_clause/2     % -ClauseRef, +Options
           ]).
 :- use_module(library(record),[(record)/1, op(_,_,record)]).
+:- use_module(library(debug),[debug/3,debugging/1,assertion/1]).
 
 :- autoload(library(apply),[maplist/2]).
-:- autoload(library(debug),[debug/3,debugging/1,assertion/1]).
 :- autoload(library(error),[must_be/2]).
 :- autoload(library(listing),[portray_clause/1]).
 :- autoload(library(lists),[member/2,nth1/3,append/3]).
@@ -563,6 +564,8 @@ walk_called(Goal, Module, TermPos, OTerm) :-
 walk_called(Goal, Module, _, OTerm) :-
     evaluate(Goal, Module, OTerm),
     !.
+walk_called(autoload_call(_), _, _, _) :-
+    !.		% Should we continue, but just not report?
 walk_called(Goal, M, TermPos, OTerm) :-
     (   (   predicate_property(M:Goal, imported_from(IM))
         ->  true
@@ -1174,6 +1177,10 @@ translate_location(file_term_position(Path, TermPos), Dict) =>
               character_count: CharCount,
               line_count: Line,
               line_position: LinePos
+            }.
+translate_location(file(Path, Line, -1, _), Dict) =>
+    Dict = _{ file: Path,
+              line_count: Line
             }.
 translate_location(Var, Dict), var(Var) =>
     Dict = _{}.

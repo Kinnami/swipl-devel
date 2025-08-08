@@ -304,7 +304,9 @@ with reversed argument order.
 Bi-directional conversion between a term and a string. If \arg{String}
 is instantiated, it is parsed and the result is unified with \arg{Term}.
 Otherwise \arg{Term} is `written' using the option \term{quoted}{true}
-and the result is converted to \arg{String}.
+and the result is converted to \arg{String}.  If \arg{String} only
+contains white space and/or comments, an \term{syntax_error}{end_of_string}
+exception is raised.
 
     \predicate{term_string}{3}{?Term, ?String, +Options}
 As term_string/2, passing \arg{Options} to either read_term/2
@@ -350,9 +352,10 @@ interpreted as an empty string.
     \predicate{string_length}{2}{+String, -Length}
 Unify \arg{Length} with the number of characters in \arg{String}. This
 predicate is functionally equivalent to atom_length/2 and also accepts
-\jargon{anytext} as its first argument. Number types must first be
-formatted into strings before the length of their string representation
-can be determined.
+\jargon{anytext} as its first argument. Numeric types are formatted
+into strings before the length of their string representation is
+determined.\footnote{This behavior should be considered deprecated}
+See also write_length/3.
 
     \predicate{string_code}{3}{?Index, +String, ?Code}
 True when \arg{Code} represents the character at the 1-based \arg{Index}
@@ -473,12 +476,13 @@ Convert \arg{String} to lower case and unify the result with
 \arg{LowerCase}.
 
     \predicate{read_string}{3}{+Stream, ?Length, -String}
-Read at most \arg{Length} characters from \arg{Stream} and
-return them in the string \arg{String}.  If \arg{Length} is
-unbound, \arg{Stream} is read to the end and \arg{Length} is
-unified with the number of characters read. Note that
-\textit{characters} must be read as \jargon{Unicode code points},
-\emph{not} bytes.
+Read at most \arg{Length} characters from \arg{Stream} and return them
+in the string \arg{String}. If \arg{Length} is unbound, \arg{Stream} is
+read to the end and \arg{Length} is unified with the number of
+characters read. The number of \jargon{bytes} read depends on the
+encoding of \arg{Stream} (see \secref{encoding}). This predicate may be
+used to read a sequence of bytes when the stream is in \const{octet}
+encoding.   See open/4 and set_stream/2 for controlling the encoding.
 
     \predicate{read_string}{5}{+Stream, +SepChars, +PadChars, -Sep, -String}
 Read a string from \arg{Stream}, providing functionality similar to
@@ -1120,6 +1124,17 @@ is a duplicate key.
 Bi-directional mapping between a dict and an ordered list of pairs
 (see \secref{pairs}).
 
+    \predicate{dict_same_keys}{2}{?Dict1, ?Dict2}
+True when \arg{Dict1} and \arg{Dict2} have the same set of keys.  The
+\jargon{tag} is not considered.  This predicate is semidet if both
+arguments are instantiated to a dict.  If one is instantiated to a
+dict and the other is unbound, it generates a dict with the same
+keys and unbound tag and values.  The predicate is_dict/2 may be
+used test tag equivalence or unify the tags.   This predicate
+raises an \const{instantiation_error} if both argument are unbound
+or a \const{type_error} if one of the arguments is neither a dict
+nor a variable.
+
     \predicate{put_dict}{3}{+New, +DictIn, -DictOut}
 \arg{DictOut} is a new dict created by replacing or adding key-value pairs
 from \arg{New} to \arg{Dict}. \arg{New} is either a dict or a valid input
@@ -1182,14 +1197,14 @@ The goal \verb$Select :< From$ is equivalent to
 True when the tags of \arg{Select} and \arg{From} have been unified,
 all keys in \arg{Select} appear in \arg{From} and the corresponding
 values have been unified. The key-value pairs of \arg{From} that do not
-appear in \arg{Select} are used to form an anonymous dict, which us
+appear in \arg{Select} are used to form an anonymous dict, which is
 unified with \arg{Rest}.  For example:
 
 \begin{code}
 ?- select_dict(P{x:0, y:Y}, point{x:0, y:1, z:2}, R).
 P = point,
 Y = 1,
-R = _G1705{z:2}.
+R = _{z:2}.
 \end{code}
 
 See also \predref{:<}{2} to ignore \arg{Rest} and \predref{>:<}{2} for

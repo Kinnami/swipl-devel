@@ -84,8 +84,15 @@
 \libsummary{dicts}
 \input{summaries.d/dicts.tex}
 
+\IfFileExists{summaries.d/dom.tex}{
+\libsummary{dom}
+\input{summaries.d/dom.tex}}{}
+
 \libsummary{error}
 \input{summaries.d/error.tex}
+
+\libsummary{exceptions}
+\input{summaries.d/exceptions.tex}
 
 \libsummary{fastrw}
 \input{summaries.d/fastrw.tex}
@@ -117,6 +124,9 @@
 \libsummary{lists}
 \input{summaries.d/lists.tex}
 
+\libsummary{macros}
+\input{summaries.d/macros.tex}
+
 \libsummary{main}
 \input{summaries.d/main.tex}
 
@@ -141,6 +151,9 @@
 \libsummary{predicate_options}
 \input{summaries.d/predopts.tex}
 
+\libsummary{prologcoverage}
+\input{summaries.d/prologcoverage.tex}
+
 \libsummary{prologdebug}
 \input{summaries.d/prologdebug.tex}
 
@@ -149,6 +162,9 @@
 
 \libsummary{prologpack}
 \input{summaries.d/prologpack.tex}
+
+\libsummary{prologversions}
+\input{summaries.d/prologversions.tex}
 
 \libsummary{prologtrace}
 \input{summaries.d/prologtrace.tex}
@@ -205,6 +221,10 @@ This library is only available on Windows systems.
 \predicatesummary{shell_register_prolog}{1}{Register Prolog}
 \end{summarylist}
 
+\IfFileExists{summaries.d/rwlocks.tex}{
+\libsummary{rwlocks}
+\input{summaries.d/rwlocks.tex}}{}
+
 \libsummary{settings}
 \input{summaries.d/settings.tex}
 
@@ -256,6 +276,10 @@ This library is only available on Windows systems.
 
 \libsummary{url}
 \input{summaries.d/url.tex}
+
+\IfFileExists{summaries.d/wasmlib.tex}{
+\libsummary{wasm}
+\input{summaries.d/wasmlib.tex}}{}
 
 \libsummary{www_browser}
 \input{summaries.d/wwwbrowser.tex}

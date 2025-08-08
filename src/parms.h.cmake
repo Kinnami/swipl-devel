@@ -1,9 +1,12 @@
-#define PLHOME		  "@PLHOME@"
+/* Generated using cmake/Parms.cmake from src/parms.h.cmake */
+
+#cmakedefine PLHOME	  "@PLHOME@"
+#cmakedefine PLRELHOME	  "@PLRELHOME@"
 #cmakedefine PLSHAREDHOME "@PLSHAREDHOME@"
 #cmakedefine PLPKGNAME    "@SWIPL_PKG_NAME@"
 #define PLARCH            "@PLARCH@"
-#define C_CC              "@C_CC@"
-#define C_CXX             "@C_CXX@"
+#define C_CC              "@SWIPL_CC@"
+#define C_CXX             "@SWIPL_CXX@"
 #define C_CFLAGS          "@C_CFLAGS@"
 #cmakedefine SO_EXT       "@SO_EXT@"
 #cmakedefine SO_PATH      "@SO_PATH@"
@@ -14,3 +17,5 @@
 #define C_LIBS            ""
 #define C_PLLIB           "-lswipl"
 #define C_LDFLAGS         ""
+#cmakedefine BUILD_MACOS_BUNDLE "@MACOSX_BUNDLE_BUNDLE_NAME@"
+#cmakedefine SWIPL_INSTALL_WIN_BUNDLE 1

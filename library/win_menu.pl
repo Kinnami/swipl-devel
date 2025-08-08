@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2002-2019, University of Amsterdam
+    Copyright (c)  2002-2025, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -37,11 +38,13 @@
 :- module(win_menu,
           [ init_win_menus/0
           ]).
-:- autoload(library(apply),[maplist/4]).
-:- autoload(library(edit),[edit/1]).
-:- autoload(library(lists),[select/3,append/3]).
-:- autoload(library(pce),[get/8]).
-:- autoload(library(www_browser),[expand_url_path/2,www_open_url/1]).
+:- autoload(library(apply), [maplist/4]).
+:- autoload(library(edit), [edit/1]).
+:- autoload(library(lists), [select/3, append/3, member/2]).
+:- autoload(library(pce), [get/3]).
+:- autoload(library(www_browser), [expand_url_path/2, www_open_url/1]).
+:- autoload(library(uri), [uri_file_name/2, uri_components/2, uri_data/3]).
+:- autoload(library(readutil), [read_line_to_codes/2]).
 
 
 :- set_prolog_flag(generate_debug_info, false).
@@ -206,14 +209,16 @@ insert_associated_file :-
     win_insert_menu_item('&File', Label, '&New ...', edit(file(File))).
 insert_associated_file.
 
+create_win_menu :-
+    Check = win_has_menu,
+    current_predicate(Check/0),
+    call(Check),
+    !,
+    init_win_menus.
+create_win_menu.
 
-:- if(current_predicate(win_has_menu/0)).
-:- initialization
-   (   win_has_menu
-   ->  init_win_menus
-   ;   true
-   ).
-:- endif.
+:- initialization(create_win_menu).
+
 
                  /*******************************
                  *            ACTIONS           *
@@ -323,47 +328,37 @@ prolog_file_pattern(Pattern) :-
     user:prolog_file_type(Ext, prolog),
     atom_concat('*.', Ext, Pattern).
 
+                /*******************************
+                *      CONSOLE HYPERLINKS      *
+                *******************************/
 
-:- if(current_prolog_flag(windows, true)).
+prolog:on_link(Link) :-
+    tty_link(Link).
 
-                 /*******************************
-                 *          APPLICATION         *
-                 *******************************/
-
-%!  init_win_app
+%!  tty_link(+Link) is det.
 %
-%   If Prolog is started using --win_app, try to change directory
-%   to <My Documents>\Prolog.
+%   Handle a terminal hyperlink to ``file://`` links
 
-init_win_app :-
-    current_prolog_flag(associated_file, _),
-    !.
-init_win_app :-
-    '$cmd_option_val'(win_app, true),
+tty_link(Link) :-
+    uri_file_name(Link, File),
     !,
-    catch(my_prolog, E, print_message(warning, E)).
-init_win_app.
+    uri_components(Link, Components),
+    uri_data(fragment, Components, Fragment),
+    fragment_location(Fragment, File, Location),
+    call(edit(Location)).
+tty_link(URL) :-
+    call(www_open_url(URL)).
 
-my_prolog :-
-    win_folder(personal, MyDocs),
-    atom_concat(MyDocs, '/Prolog', PrologDir),
-    (   ensure_dir(PrologDir)
-    ->  working_directory(_, PrologDir)
-    ;   working_directory(_, MyDocs)
-    ).
-
-
-ensure_dir(Dir) :-
-    exists_directory(Dir),
+fragment_location(Fragment, File, file(File)) :-
+    var(Fragment),
     !.
-ensure_dir(Dir) :-
-    catch(make_directory(Dir), E, (print_message(warning, E), fail)).
-
-
-:- initialization
-   init_win_app.
-
-:- endif. /*windows*/
+fragment_location(Fragment, File, File:Line:Column) :-
+    split_string(Fragment, ":", "", [LineS,ColumnS]),
+    !,
+    number_string(Line, LineS),
+    number_string(Column, ColumnS).
+fragment_location(Fragment, File, File:Line) :-
+    atom_number(Fragment, Line).
 
 
                  /*******************************
@@ -493,6 +488,47 @@ action_path_menu(ActionItem, Path, Label, win_menu:Action) :-
 
 add_to_mru(_, _).
 refresh_mru.
+
+:- endif.
+
+                /*******************************
+                *       HISTORY SUPPORT        *
+                *******************************/
+
+:- if(current_predicate('$rl_history'/1)).
+
+:- multifile
+    prolog:history/2.
+
+prolog:history(_, load(File)) :-
+    access_file(File, read),
+    !,
+    setup_call_cleanup(
+        open(File, read, In, [encoding(utf8)]),
+        read_history(In),
+        close(In)).
+prolog:history(_, load(_)).
+
+read_history(In) :-
+    repeat,
+    read_line_to_codes(In, Codes),
+    (   Codes == end_of_file
+    ->  !
+    ;   atom_codes(Line, Codes),
+        rl_add_history(Line),
+        fail
+    ).
+
+prolog:history(_, save(File)) :-
+    '$rl_history'(Lines),
+    (   Lines \== []
+    ->  setup_call_cleanup(
+            open(File, write, Out, [encoding(utf8)]),
+            forall(member(Line, Lines),
+                   format(Out, '~w~n', [Line])),
+            close(Out))
+    ;   true
+    ).
 
 :- endif.
 

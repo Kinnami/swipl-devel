@@ -3,7 +3,7 @@
     Author:        Keri Harris
     E-mail:        keri.harris@securitease.com
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2021, University of Amsterdam
+    Copyright (c)  2011-2025, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -66,7 +66,6 @@ const debug_topic debug_topics[] =
   DEBUG_TOPIC(MSG_INDEX_FIND),
   DEBUG_TOPIC(MSG_INDEX_UPDATE),
   DEBUG_TOPIC(MSG_INDEX_DEEP),
-  DEBUG_TOPIC(MSG_TRACE),
 
   DEBUG_TOPIC(MSG_QLF_INTEGER),
   DEBUG_TOPIC(MSG_QLF_FLOAT),
@@ -81,6 +80,8 @@ const debug_topic debug_topics[] =
   DEBUG_TOPIC(MSG_QLF_BOOT),
   DEBUG_TOPIC(MSG_QLF_BOOT_READ),
   DEBUG_TOPIC(MSG_QLF_LABEL),
+  DEBUG_TOPIC(MSG_QLF_IMPORT),
+  DEBUG_TOPIC(MSG_QLF_INCLUDE),
   DEBUG_TOPIC(MSG_PROC_COUNT),
   DEBUG_TOPIC(MSG_CUT),
 
@@ -118,6 +119,9 @@ const debug_topic debug_topics[] =
   DEBUG_TOPIC(MSG_PRED_COUNT),
 
   DEBUG_TOPIC(MSG_BACKTRACK),
+  DEBUG_TOPIC(MSG_CSTACK),
+  DEBUG_TOPIC(MSG_GMP_ALLOC),
+  DEBUG_TOPIC(MSG_GMP_OVERFLOW),
 
 						/* GC messages */
   DEBUG_TOPIC(MSG_AGC),
@@ -151,6 +155,12 @@ const debug_topic debug_topics[] =
   DEBUG_TOPIC(MSG_UNWIND_EXCEPTION),
   DEBUG_TOPIC(MSG_AGC_CONSIDER),
 
+  DEBUG_TOPIC(MSG_TRACE),
+  DEBUG_TOPIC(MSG_TRACE_REDO),
+  DEBUG_TOPIC(MSG_TRACE_RETRY),
+  DEBUG_TOPIC(MSG_TRACE_PORT),
+  DEBUG_TOPIC(MSG_TRACE_FRAME),
+
   DEBUG_TOPIC(MSG_ATTVAR_LINK),
   DEBUG_TOPIC(MSG_CALL_RESIDUE_VARS),
   DEBUG_TOPIC(MSG_SOFTCUT),
@@ -175,6 +185,7 @@ const debug_topic debug_topics[] =
   DEBUG_TOPIC(MSG_JIT),
   DEBUG_TOPIC(MSG_JIT_DELINDEX),
   DEBUG_TOPIC(MSG_JIT_POOR),
+  DEBUG_TOPIC(MSG_JIT_PRIMARY),
 
   DEBUG_TOPIC(MSG_RECONSULT),
   DEBUG_TOPIC(MSG_RECONSULT_PRED),
@@ -233,6 +244,11 @@ const debug_topic debug_topics[] =
 
   DEBUG_TOPIC(MSG_READ_OP),
 
+  DEBUG_TOPIC(MSG_WRITE_FLOAT),
+
+  DEBUG_TOPIC(MSG_YIELD),
+  DEBUG_TOPIC(MSG_WASM_ASYNC),
+
   DEBUG_TOPIC(CHK_SECURE),
   DEBUG_TOPIC(CHK_HIGH_ARITY),
   DEBUG_TOPIC(CHK_HIGHER_ADDRESS),
@@ -279,12 +295,12 @@ static int
 prolog_debug_topic(const char *topic, int flag)
 { long level;
   char *end;
-  int success = FALSE;
+  int success = false;
 
   level = strtol(topic, &end, 10);
   if ( end > topic && *end == EOS )
   { GD->debug_level = level;
-    success = TRUE;
+    success = true;
   } else
   { const debug_topic *dt = NULL;
 
@@ -298,7 +314,7 @@ prolog_debug_topic(const char *topic, int flag)
 
     while ( (dt = get_next_debug_topic(topic, dt)) )
     { int code = dt->code;
-      success = TRUE;
+      success = true;
 
       if ( code <= DBG_LEVEL9 )
 	GD->debug_level = code;
@@ -348,7 +364,7 @@ prolog_debug_from_string(const char *spec, int flag)
       buf[end-spec] = EOS;
       if ( !prolog_debug_topic(buf, flag) )
       { if (quiet)
-	  return FALSE;
+	  return false;
 	Sdprintf("ERROR: Unknown debug topic: %s\n", buf);
 	PL_halt(1);
       }
@@ -361,24 +377,24 @@ prolog_debug_from_string(const char *spec, int flag)
 
   if ( !prolog_debug_topic(spec, flag) )
   { if (quiet)
-      return FALSE;
+      return false;
     Sdprintf("ERROR: Unknown debug topic: %s\n", spec);
     PL_halt(1);
   }
 
-  return TRUE;
+  return true;
 }
 
 
 int
 PL_prolog_debug(const char *topic)
-{ return prolog_debug_topic(topic, TRUE);
+{ return prolog_debug_topic(topic, true);
 }
 
 
 int
 PL_prolog_nodebug(const char *topic)
-{ return prolog_debug_topic(topic, FALSE);
+{ return prolog_debug_topic(topic, false);
 }
 
 
@@ -391,7 +407,7 @@ prolog_debug(term_t t, int flag)
     fail;
 
   if ( prolog_debug_topic(topic, flag) )
-    return TRUE;
+    return true;
 
   return PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_debug_topic, t);
 }
@@ -399,13 +415,13 @@ prolog_debug(term_t t, int flag)
 
 static
 PRED_IMPL("prolog_debug", 1, pl_prolog_debug, 0)
-{ return prolog_debug(A1, TRUE);
+{ return prolog_debug(A1, true);
 }
 
 
 static
 PRED_IMPL("prolog_nodebug", 1, pl_prolog_nodebug, 0)
-{ return prolog_debug(A1, FALSE);
+{ return prolog_debug(A1, false);
 }
 
 

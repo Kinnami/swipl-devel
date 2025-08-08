@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2017-2020, University of Amsterdam
+    Copyright (c)  2017-2024, University of Amsterdam
                               VU University Amsterdam
-		              CWI, Amsterdam
+			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -37,10 +38,14 @@
 #ifndef PL_STREAM_H_INCLUDED
 #define PL_STREAM_H_INCLUDED
 
+#define SWIPL_WINDOWS_NATIVE_ACCESS 1
 #include "SWI-Stream.h"
 
-void	unallocStream(IOSTREAM *s);
+void		unallocStream(IOSTREAM *s);
+IOSTREAM       *Sacquire(IOSTREAM *s);
+int             Srelease(IOSTREAM *s);
 
+#ifndef _PL_INCLUDE_H
 #ifdef O_PLMT
 #define ATOMIC_ADD(ptr, v)	__atomic_add_fetch(ptr, v, __ATOMIC_SEQ_CST)
 #define ATOMIC_SUB(ptr, v)	__atomic_sub_fetch(ptr, v, __ATOMIC_SEQ_CST)
@@ -51,6 +56,7 @@ void	unallocStream(IOSTREAM *s);
 #define ATOMIC_SUB(ptr, v)	(*ptr -= v)
 #define ATOMIC_INC(ptr)		(++(*ptr))
 #define ATOMIC_DEC(ptr)		(--(*ptr))
+#endif
 #endif
 
 
@@ -79,7 +85,7 @@ dbgfd(void)
     { char *f;
 
       tried = 1;
-      if ( (f = getenv("SWI_DEBUG_IOREF")) )
+      if ( (f = getenv("SWIPL_DEBUG_IOREF")) )
 	debugfd = fopen(f, "w");
     }
   }

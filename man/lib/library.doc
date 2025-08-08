@@ -42,6 +42,7 @@ documented at all.
 \input{debug}
 \input{dicts}
 \input{error}
+\input{exceptions}
 \input{fastrw}
 \input{gensym}
 \input{heaps}
@@ -50,6 +51,7 @@ documented at all.
 \input{iostream}
 \input{listing}
 \input{lists}
+\input{macros}
 \input{main}
 \input{nbset}
 \input{wwwbrowser}
@@ -62,10 +64,11 @@ documented at all.
 \input{pio}
 \input{portraytext}
 \input{predicateoptions}
+\input{prologcoverage}
 \input{prologdebug}
 \input{prologjiti}
 \input{prologtrace}
-\input{prologpack}
+\input{prologversions}
 \input{prologxref}
 \input{quasiquotations}
 \input{random}
@@ -73,6 +76,7 @@ documented at all.
 \input{readutil}
 \input{record}
 \input{registry}
+\InputIfFileExists{rwlocks}{}{}
 \input{settings}
 \input{statistics}
 \input{strings}
