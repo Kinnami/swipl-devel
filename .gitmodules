@@ -67,6 +67,9 @@
 [submodule "packages/cpp"]
 	path = packages/cpp
 	url = ../../SWI-Prolog/packages-cpp.git
+[submodule "packages/cppproxy"]
+	path = packages/cppproxy
+	url = ../../SWI-Prolog/packages-cppproxy.git
 [submodule "packages/ltx2htm"]
 	path = packages/ltx2htm
 	url = ../../SWI-Prolog/packages-ltx2htm.git
