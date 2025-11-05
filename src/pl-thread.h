@@ -119,12 +119,14 @@ typedef struct _PL_thread_info_t
   size_t	    table_space;	/* Max size for local tables */
   rc_cancel	    (*cancel)(int id);	/* cancel function */
   thread_status	    status;		/* PL_THREAD_* */
+#ifdef O_PLMT
   pthread_t	    tid;		/* Thread identifier */
 #ifdef PID_IDENTIFIES_THREAD
   pid_t		    pid;		/* for identifying */
 #endif
 #ifdef __WINDOWS__
   DWORD		    w32id;		/* Win32 thread HANDLE */
+#endif
 #endif
   struct PL_local_data  *thread_data;	/* The thread-local data  */
   module_t	    module;		/* Module for starting goal */
@@ -549,6 +551,7 @@ intptr_t	system_thread_id(PL_thread_info_t *info);
 void		get_current_timespec(struct timespec *time);
 void		carry_timespec_nanos(struct timespec *time);
 void		free_predicate_references(PL_local_data_t *ld);
+double		halt_grace_time(void);
 #undef LDFUNC_DECLARATIONS
 
 
@@ -606,7 +609,7 @@ foreign_t	pl_thread_self(term_t self);
 
 typedef struct
 { functor_t functor;			/* functor of property */
-  int LDFUNCP (*function)(DECL_LD void *ctx, term_t a);	/* function to generate */
+  bool LDFUNCP (*function)(DECL_LD void *ctx, term_t a);	/* function to generate */
 } tprop;
 
 #if USE_LD_MACROS

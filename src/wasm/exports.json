@@ -159,7 +159,6 @@
     "_PL_module_name",
     "_PL_new_module",
     "_PL_raise_exception",
-    "_PL_throw",
     "_PL_exception",
     "_PL_clear_exception",
     "_PL_sigaction",
@@ -215,6 +214,8 @@
     "_PL_set_trace_action",
     "_PL_get_trace_context",
 
+    "_WASM_mark_string_buffers",
+    "_PL_release_string_buffers_from_mark",
     "_WASM_ttymode",
     "_WASM_bind_standard_streams",
     "_WASM_yield_request",

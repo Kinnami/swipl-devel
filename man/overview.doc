@@ -698,10 +698,10 @@ is supported:
 If an xterm compatible terminal emulator is used to run Prolog you may
 wish to load either an explicit theme or \exam{library(theme/auto)}.
 
-    \item[Windows]
-The \program{swipl-win.exe} graphical application can be themed by
+    \item[Epilog Prolog consoles]
+The \program{swipl-win} graphical application can be themed by
 loading a theme file.  The theme file also sets the foreground and
-background colours for the console.
+background colours for the Epilog console.
 \end{description}
 
 
@@ -1569,8 +1569,9 @@ Set to \const{true} when built in a \href{https://docs.conda.io/}{Conda}
 environment.
 
     \prologflagitem{console_menu}{bool}{r}
-Set to \const{true} in \program{swipl-win.exe} to indicate that the console
-supports menus.  See also \secref{plwin}.
+Set to \const{true} when the I/O is bound to an Epilog
+(\program{swipl-win}) Prolog console to indicate that the console
+supports menus. See also \secref{epilog-api}.
 
     \prologflagitem{cpu_count}{integer}{rw}
 Number of physical CPUs or cores in the system. The flag is marked
@@ -1809,10 +1810,6 @@ its library as \file{<home>/library}. Some installations may put
 architecture independent files in a \jargon{shared home} and also
 define \prologflag{shared_home}.  System files can be found using
 absolute_file_name/3 as \term{swi}{file}.  See file_search_path/2.
-
-    \prologflagitem{hwnd}{integer}{r}
-In \program{swipl-win.exe}, this refers to the MS-Windows window handle of
-the console window.
 
     \prologflagitem{integer_rounding_function}{down,toward_zero}{r}
 ISO Prolog flag describing rounding by \verb$//$ and \verb$rem$ arithmetic
@@ -2175,28 +2172,16 @@ if the flag \prologflag{bounded} is \const{false}.
 
     \prologflagitem{readline}{atom}{rw}
 Specifies which form of command line editing is provided. Possible
-values are below. The flag may be set from the user's init file (see
-\secref{initgoal}) to one of \const{false}, \const{readline} or
-\const{editline}. This causes the toplevel not to load a command line
-editor (\const{false}) or load the specified one.  If loading fails
-the flag is set to \const{false}.
+values are below.
 
 \begin{description}
     \termitem{false}{}
 No command line editing is available.
 
-    \termitem{readline}{}
-The library \pllib{readline} is loaded, providing line editing based on
-the GNU readline library.
-
     \termitem{editline}{}
 The library \pllib{editline} is loaded, providing line editing based on
 the BSD libedit.  This is the default if \pllib{editline} is available
 and can be loaded.
-
-    \termitem{swipl_win}{}
-SWI-Prolog uses its own console (\program{swipl-win.exe} on Windows,
-the Qt based \program{swipl-win} on MacOS) which provides line editing.
 \end{description}
 
     \prologflagitem{report_error}{bool}{rw}
@@ -2526,6 +2511,29 @@ of create_prolog_flag/3 to create flags for their library.
 If \const{true} (default \const{false}), variables must start with an
 underscore (\chr{_}).  May be changed. This flag is local to the
 module in which it is changed.  See \secref{varprefix}.
+
+    \prologflagitem{var_tag}{Atom}{rw}
+This flag controls the interpretation of \arg{Tag}\{\ldots\} if
+\arg{Tag} is unbound.  Possible values are:
+
+    \begin{description}
+    \termitem{dict}{}
+Read as a dict (see \secref{bidicts}) with unbound tag.  This is the
+current default. The use of unbound tags is deprecated.  In due time
+the default will be changed, ultimately to \const{attvar}.  See
+\secref{ext-dict-compat}.
+    \termitem{attvar}
+Read \verb$Var{...}$ as an attributed variable.  This is likely to
+become the future default.
+    \termitem{#}{}
+Read \verb$Var{...}$ as \verb$#{...}$.  This flag allows to quickly
+assess the impact on your code of using \verb$#{...}$ rather than
+dicts with unbound tags.
+    \termitem{warning}{}
+As \chr{#}, but prints a warning.
+    \termitem{error}{}
+Considers \verb$Var{...}$ a syntax error.
+    \end{description}
 
     \prologflagitem{verbose}{atom}{rw}
 This flag is used by print_message/2.  If its value is \const{silent},

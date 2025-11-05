@@ -961,6 +961,7 @@ save_foreign_libraries(RC, _, Options) :-
            )).
 save_foreign_libraries(_RC, ExeFile, Options) :-
     option(foreign(copy), Options),
+    !,
     copy_foreign_libraries(ExeFile, Options).
 save_foreign_libraries(_, _, _).
 
@@ -990,8 +991,9 @@ copy_foreign_libraries(_ExeFile, _Options) :-
 
 prolog_dll(DLL) :-
     file_base_name(DLL, File),
-    absolute_file_name(foreign(File), DLL,
+    absolute_file_name(foreign(File), Abs,
                        [ solutions(all) ]),
+	same_file(DLL, Abs),
     !.
 
 copy_dll(Dest, DLL) :-
@@ -1349,7 +1351,7 @@ qsave_option(Name, Name, ValueStrings, Value) :-
 qsave_option(Name, Name, _Chars, _Value) :-
     existence_error(save_option, Name).
 
-convert_option_value(integer, String, Value) :-
+convert_option_value(integer, String, Value) =>
     (   number_string(Value, String)
     ->  true
     ;   sub_string(String, 0, _, 1, SubString),
@@ -1360,18 +1362,21 @@ convert_option_value(integer, String, Value) :-
     ->  Value is Number * Multiplier
     ;   domain_error(integer, String)
     ).
-convert_option_value(callable, String, Value) :-
+convert_option_value(callable, String, Value) =>
     term_string(Value, String).
-convert_option_value(atom, String, Value) :-
+convert_option_value(atom, String, Value) =>
     atom_string(Value, String).
-convert_option_value(boolean, String, Value) :-
+convert_option_value(boolean, String, Value) =>
     atom_string(Value, String).
-convert_option_value(oneof(_), String, Value) :-
+convert_option_value(oneof(_), String, Value) =>
     atom_string(Value, String).
-convert_option_value(ground, String, Value) :-
+convert_option_value(ground, String, Value) =>
     atom_string(Value, String).
-convert_option_value(qsave_foreign_option, "save", save).
-convert_option_value(qsave_foreign_option, StrArchList, arch(ArchList)) :-
+convert_option_value(qsave_foreign_option, "save", Value) =>
+    Value = save.
+convert_option_value(qsave_foreign_option, "copy", Value) =>
+    Value = copy.
+convert_option_value(qsave_foreign_option, StrArchList, arch(ArchList)) =>
     split_string(StrArchList, ",", ", \t", StrArchList1),
     maplist(atom_string, ArchList, StrArchList1).
 

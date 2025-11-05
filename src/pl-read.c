@@ -39,6 +39,7 @@
 #include "pl-read.h"
 #include "pl-arith.h"
 #include <math.h>
+#include <float.h>
 #include "os/pl-ctype.h"
 #include "os/pl-utf8.h"
 #include "os/pl-dtoa.h"
@@ -55,6 +56,7 @@
 #include "pl-op.h"
 #include "pl-modul.h"
 #include "pl-setup.h"
+#include "pl-attvar.h"
 #include <errno.h>
 
 typedef const unsigned char * cucharp;
@@ -87,6 +89,11 @@ static void	  addUTF8Buffer(Buffer b, int c);
 #define PlPunctW(c)	CharTypeW(c, == PU, 0)
 #define PlSoloW(c)	CharTypeW(c, == SO, U_OTHER)
 #define PlInvalidW(c)   (uflagsW(c) == 0)
+
+/* these functions  must be of type  int (*)(int) as they  are used by
+ * os/pl-ctype.c for function pointers  of this type.  Other functions
+ * in this class return -1 for false and a code point otherwise.
+ */
 
 int
 f_is_prolog_var_start(int c)
@@ -157,12 +164,10 @@ decimal_weight(int code)
 }
 
 
-
-
 /* unquoted_atomW() returns true if text can be written to s as unquoted atom
 */
 
-static int
+static bool
 truePrologFlagNoLD(unsigned int flag)
 { GET_LD
 
@@ -170,7 +175,7 @@ truePrologFlagNoLD(unsigned int flag)
 }
 
 
-int
+bool
 atom_varnameW(const pl_wchar_t *s, size_t len)
 { if ( f_is_prolog_var_start(*s) )
   { for(s++; --len > 0; s++)
@@ -323,9 +328,6 @@ another read.  Notable raw reading needs to be studied studied once more
 as it  takes  about  30%  of  the  entire  compilation  time  and  looks
 promissing  for  optimisations.   It  also  could  be  made  a  bit more
 readable.
-
-This module is considerably faster when compiled  with  GCC,  using  the
--finline-functions option.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 typedef struct variable
@@ -335,6 +337,7 @@ typedef struct variable
   unsigned int	times;		/* Number of occurences */
   unsigned int	hash_next;	/* Offset for next with same hash */
   word		signature;	/* Pseudo atom */
+  bool		labeled;        /* Used in X{= : Value} */
 } *Variable;
 
 typedef struct token
@@ -1709,6 +1712,7 @@ lookupVariable(const char *name, size_t len, ReadData _PL_rd)
   var->times     = 1;
   var->variable  = 0;
   var->signature = consVarInfo(nv);
+  var->labeled   = false;
   if ( nv >= 16 )
     hashVariable(var, _PL_rd);
 
@@ -1716,7 +1720,7 @@ lookupVariable(const char *name, size_t len, ReadData _PL_rd)
 }
 
 
-static int
+static bool
 warn_singleton(const char *name)	/* Name in UTF-8 */
 { if ( name[0] != '_' )			/* not _*: always warn */
     return true;
@@ -1735,7 +1739,7 @@ warn_singleton(const char *name)	/* Name in UTF-8 */
 }
 
 
-static int
+static bool
 warn_multiton(const char *name)
 { if ( !warn_singleton(name) )
   { if ( name[0] == '_' && name[1] )
@@ -1767,7 +1771,7 @@ warn_multiton(const char *name)
 #define IS_MULTITON     2
 
 #define is_singleton(var, type, _PL_rd) LDFUNC(is_singleton, var, type, _PL_rd)
-static int
+static bool
 is_singleton(DECL_LD Variable var, int type, ReadData _PL_rd)
 { if ( var->times == 1 )
   { if ( (type == IS_SINGLETON    && warn_singleton(var->name)) ||
@@ -1852,7 +1856,7 @@ check_singletons(DECL_LD term_t term, ReadData _PL_rd)
       }
     }
 
-    succeed;
+    return true;
   }
 }
 
@@ -1962,7 +1966,7 @@ PRED_IMPL("$qq_open", 2, qq_open, 0)
 
 
 #define parse_quasi_quotations(_PL_rd) LDFUNC(parse_quasi_quotations, _PL_rd)
-static int
+static bool
 parse_quasi_quotations(DECL_LD ReadData _PL_rd)
 { if ( _PL_rd->qq_tail )
   { term_t av;
@@ -2213,8 +2217,8 @@ scan_decimal(cucharp *sp, int zero, int negative, Number n, int *grouped)
 
 	return NUM_OK;
 #else
-	double maxf =  MAXREAL / 10.0 - 10.0;
-	double minf = -MAXREAL / 10.0 + 10.0;
+	double maxf =  DBL_MAX / 10.0 - 10.0;
+	double minf = -DBL_MAX / 10.0 + 10.0;
 	double tf = (double)t;
 	do
 	{ for(sn = utf8_get_uchar(s, &c); isDecimal(zero, c); sn = utf8_get_uchar(s, &c))
@@ -2293,8 +2297,8 @@ scan_number(cucharp *s, int negative, int b, Number n)
 	return NUM_OK;
 #else
 
-	double maxf =  MAXREAL / (double) b - (double) b;
-	double minf = -MAXREAL / (double) b + (double) b;
+	double maxf =  DBL_MAX / (double) b - (double) b;
+	double minf = -DBL_MAX / (double) b + (double) b;
 	double tf = (double)t;
 	do
 	{ while((d = digitValue(b, *q)) >= 0)
@@ -2870,20 +2874,25 @@ str_number(cucharp in, ucharp *end, Number value, int flags)
 					/* base'value number */
   if ( *in == '\'' &&
        zero == '0' &&
-       value->type == V_INTEGER &&
-       value->value.i <= 36 &&
-       value->value.i > 1 &&
-       digitValue((int)value->value.i, in[1]) >= 0 )
-  { in++;
+       value->type == V_INTEGER )
+  { int64_t base = value->value.i;
 
-    if ( !(rc=scan_number(&in, negative, (int)value->value.i, value)) )
-      return rc;			/* number too large */
+    if ( base < 0 )
+      base = -base;
 
-    *end = (ucharp)in;
+    if ( base <= 36 &&
+	 base > 1 &&
+	 digitValue(base, in[1]) >= 0 )
+    { in++;
 
-    return NUM_OK;
+      if ( !(rc=scan_number(&in, negative, (int)base, value)) )
+	return rc;			/* number too large */
+
+      *end = (ucharp)in;
+
+      return NUM_OK;
+    }
   }
-
 					/* floating point numbers */
   if ( *in == '.' && points_at_decimal(in+1, zero) )
   { clearNumber(value);
@@ -3338,8 +3347,10 @@ statically allocated and thus unique.
 
 #define setHandle(h, w)		(*valTermRef(h) = (w))
 
-#define readValHandle(term, argp, _PL_rd) LDFUNC(readValHandle, term, argp, _PL_rd)
-static inline void
+#define readValHandle(term, argp, _PL_rd) \
+	LDFUNC(readValHandle, term, argp, _PL_rd)
+
+static void
 readValHandle(DECL_LD term_t term, Word argp, ReadData _PL_rd)
 { word w = *valTermRef(term);
   Variable var;
@@ -3362,6 +3373,17 @@ readValHandle(DECL_LD term_t term, Word argp, ReadData _PL_rd)
   setVar(*valTermRef(term));
 }
 
+#define readValHandleConst(term, argp, _PL_rd) \
+	LDFUNC(readValHandleConst, term, argp, _PL_rd)
+
+static void
+readValHandleConst(DECL_LD term_t term, Word argp, ReadData _PL_rd)
+{ word w = *valTermRef(term);
+
+  assert(isConst(w));
+  *argp = w;
+  setVar(*valTermRef(term));
+}
 
 #define ensureSpaceForTermRefs(n) LDFUNC(ensureSpaceForTermRefs, n)
 static inline bool
@@ -3375,18 +3397,15 @@ ensureSpaceForTermRefs(DECL_LD size_t n)
 */
 
 #define build_term(atom, arity, _PL_rd) LDFUNC(build_term, atom, arity, _PL_rd)
-static int
+static bool
 build_term(DECL_LD atom_t atom, int arity, ReadData _PL_rd)
 { functor_t functor = lookupFunctorDef(atom, arity);
   word w;
   Word argp;
-  int rc;
 
-  if ( !hasGlobalSpace(arity+1) &&
-       (rc=ensureGlobalSpace(arity+1, ALLOW_GC|ALLOW_SHIFT)) != true )
-    return raiseStackOverflow(rc);
-  if ( (rc=ensureSpaceForTermRefs(arity)) != true )
-    return rc;
+  if ( !ensureGlobalSpace(arity+1, ALLOW_GC|ALLOW_SHIFT) ||
+       !ensureSpaceForTermRefs(arity) )
+    return false;
 
   DEBUG(8, Sdprintf("Building term %s/%d ... ", stringAtom(atom), arity));
   argp = gTop;
@@ -3415,6 +3434,144 @@ build_term(DECL_LD atom_t atom, int arity, ReadData _PL_rd)
   return true;
 }
 
+/** Build a term from X{= : Value}.
+ */
+
+#define build_labeled_subterm(pairs, _PL_rd) \
+	LDFUNC(build_labeled_subterm, pairs, _PL_rd)
+
+static int
+build_labeled_subterm(DECL_LD int pairs, ReadData _PL_rd)
+{ if ( pairs == 1 )
+  { term_t *argv = term_av(-3, _PL_rd);
+
+    if ( *valTermRef(argv[1]) == ATOM_equals )
+    { word w = *valTermRef(argv[0]);
+      Variable var = varInfo(w, _PL_rd);
+
+      if ( !ensureGlobalSpace(1, ALLOW_GC|ALLOW_SHIFT) ||
+	   !ensureSpaceForTermRefs(1) )
+	return false;
+
+      if ( !var )		/* `_` */
+      { readValHandle(argv[2], valTermRef(argv[0]), _PL_rd);
+      } else
+      { if ( var->variable )
+	{ if ( PL_is_attvar(var->variable) )
+	  { term_t ex;
+	    return ( (ex=makeErrorTerm("label_on_attvar", NULL, 0, _PL_rd)) &&
+		     PL_raise_exception(ex) );
+	  }
+	  if ( var->labeled )
+	  { term_t ex;
+	    return ( (ex=makeErrorTerm("duplicate_label_value", NULL, 0, _PL_rd)) &&
+		     PL_raise_exception(ex) );
+	  }
+	  if ( !PL_unify(var->variable, argv[2]) )
+	    return false;
+	} else
+	{ var->variable = PL_new_term_ref_noshift();
+	  Word gvar = allocGlobalNoShift(1);
+	  readValHandle(argv[2], gvar, _PL_rd);
+	  setHandle(var->variable, makeRefG(gvar));
+	}
+	var->labeled = true;
+	setHandle(argv[0], *valTermRef(var->variable));
+      }
+
+      truncate_term_stack(&argv[1], _PL_rd);
+      return true;
+    }
+  }
+
+  return -1;
+}
+
+/**
+ * Build an attributed variable from data collected for a dict.  We
+ * know the "tag" is a variable.
+ */
+
+#define build_attvar(pairs, _PL_rd) LDFUNC(build_attvar, pairs, _PL_rd)
+static bool
+build_attvar(DECL_LD int pairs, ReadData _PL_rd)
+{ int rc = build_labeled_subterm(pairs, _PL_rd);
+  if ( rc >= 0 )
+    return rc;			/* X{= : Value} or error */
+
+  if ( pairs == 0 )		/* X{}: The variable is already at argv[0] */
+    return true;
+
+  int arity = pairs*2+1;
+  term_t *argv = term_av(-arity, _PL_rd);
+  word w = *valTermRef(argv[0]);
+  Variable var = varInfo(w, _PL_rd);
+
+  /* put_attr() needs max 5 cells global and 2 trail */
+  /* First needs 2 more */
+  /* We also need the variable itself and a cell for the value */
+  if ( !ensureStackSpace(1+2+pairs*6, pairs*2) ||
+       !ensureSpaceForTermRefs(2+arity) )
+    return false;
+
+  /* Begin no GC/shift */
+  term_t attvar_term;
+  if ( var )
+  { if ( var->variable )
+    { if ( var->labeled )
+      { term_t ex;
+	return ( (ex=makeErrorTerm("attvar_on_label", NULL, 0, _PL_rd)) &&
+		 PL_raise_exception(ex) );
+      }
+      attvar_term = var->variable;
+    } else
+    { attvar_term = PL_new_term_ref();
+      Word attvar = alloc_attvar();
+      setHandle(attvar_term, makeRefG(attvar));
+      var->variable = attvar_term;
+    }
+  } else			/* `_` */
+  { attvar_term = PL_new_term_ref();
+    Word attvar = alloc_attvar();
+    setHandle(attvar_term, makeRefG(attvar));
+  }
+
+  for(int i=0; i<pairs; i++)
+  { word name;
+    Word value = allocGlobalNoShift(1);
+
+    readValHandleConst(argv[i*2+1], &name, _PL_rd);
+    readValHandle(argv[i*2+2],      value, _PL_rd);
+
+    if ( name == ATOM_equals )
+    { term_t ex;
+      return ( (ex=makeErrorTerm("label_on_attvar", NULL, 0, _PL_rd)) &&
+	       PL_raise_exception(ex) );
+    } else
+    { Word vp;
+
+      if ( find_attr(valTermRef(attvar_term), name, &vp) )
+      { if ( compareStandard(value, vp, true) != CMP_EQUAL )
+	{ if ( exception_term )
+	    return false;
+	  term_t ex;
+	  return ( (ex=makeErrorTerm("duplicate_attribute", NULL, 0, _PL_rd)) &&
+		   PL_raise_exception(ex) );
+	}
+      }
+
+      bool rc = put_attr(valTermRef(attvar_term), name, value);
+      assert(rc);
+      (void)rc;
+    }
+  }
+
+  setHandle(argv[0], *valTermRef(attvar_term));
+  truncate_term_stack(&argv[1], _PL_rd);
+
+  return true;
+}
+
 
 /* build_dict(int pairs, ...) builds a dict from the data on the stack.
    and pushes the result back to the term-stack. The stack first
@@ -3430,24 +3587,55 @@ build_dict(DECL_LD int pairs, ReadData _PL_rd)
   term_t *argv = term_av(-arity, _PL_rd);
   word w;
   Word argp;
-  int i;
   bool rc;
   int index_buf[64];
   int *indexes = index_buf;
+  word tag = 0;
+
+  if ( (_PL_rd->flags&VARTAG_MASK) )
+  { word w = *valTermRef(argv[0]);
+    Variable var;
+
+    if ( isVar(w) ||		/* anonymous (_) */
+	 (var = varInfo(w, _PL_rd)) )
+    { switch( (_PL_rd->flags&VARTAG_MASK) )
+      { case VARTAG_ERROR:
+	{ term_t ex = makeErrorTerm("var_tag", NULL, 0, _PL_rd);
+	  if ( ex )
+	    PL_raise_exception(ex);
+	  return false;
+	}
+	case VARTAG_WARNING:
+	{ term_t ex = makeErrorTerm("warning_var_tag", NULL, 0, _PL_rd);
+	  if ( !ex || !printMessage(ATOM_warning, PL_TERM, ex) )
+	    return false;
+	}
+	/*FALLTHROUGH*/
+	case VARTAG_DYNDICT:
+	  tag = ATOM_dyndict;
+	  break;
+	case VARTAG_ATTVAR:
+	  return build_attvar(pairs, _PL_rd);
+	default:
+	  assert(0);
+      }
+    }
+  }
 
   if ( pairs > 64 )
   { if ( !(indexes = malloc(sizeof(int)*pairs)) )
       return PL_no_memory();
   }
-  for(i=0; i<pairs; i++)
+  for(int i=0; i<pairs; i++)
     indexes[i] = i;
 
-  if ( (i=dict_order_term_refs(argv+1, indexes, pairs)) )
+  int dupl;
+  if ( (dupl=dict_order_term_refs(argv+1, indexes, pairs)) )
   { term_t ex = PL_new_term_ref();
 
     rc = ( PL_unify_term(ex,
 			 PL_FUNCTOR, FUNCTOR_duplicate_key1,
-			   PL_TERM, argv[indexes[i]*2+1]) &&
+			   PL_TERM, argv[indexes[dupl]*2+1]) &&
 	   errorWarningA1("duplicate_key", NULL, ex, _PL_rd)
 	 );
 
@@ -3457,10 +3645,8 @@ build_dict(DECL_LD int pairs, ReadData _PL_rd)
     return rc;
   }
 
-  if ( !hasGlobalSpace(pairs*2+2) &&
-       !ensureGlobalSpace(pairs*2+2, ALLOW_GC|ALLOW_SHIFT) )
-    return false;
-  if ( !ensureSpaceForTermRefs(arity) )
+  if ( !ensureGlobalSpace(pairs*2+2, ALLOW_GC|ALLOW_SHIFT) ||
+       !ensureSpaceForTermRefs(arity) )
     return false;
 
   DEBUG(9, Sdprintf("Building dict with %d pairs ... ", pairs));
@@ -3468,9 +3654,12 @@ build_dict(DECL_LD int pairs, ReadData _PL_rd)
   w = consPtr(argp, TAG_COMPOUND|STG_GLOBAL);
   gTop += pairs*2+2;
   *argp++ = dict_functor(pairs);
-  readValHandle(argv[0], argp++, _PL_rd); /* the tag */
+  if ( tag )
+    *argp++ = tag;
+  else
+    readValHandle(argv[0], argp++, _PL_rd); /* the tag */
 
-  for(i=0; i<pairs; i++)
+  for(int i=0; i<pairs; i++)
   { readValHandle(argv[indexes[i]*2+2], argp++, _PL_rd); /* value */
     readValHandle(argv[indexes[i]*2+1], argp++, _PL_rd); /* key */
   }
@@ -5200,7 +5389,7 @@ callCommentHook(predicate_t comment_hook,
 }
 
 
-int
+bool
 read_clause(DECL_LD IOSTREAM *s, term_t term, term_t options)
 { read_data rd;
   int rval;
@@ -5310,7 +5499,9 @@ static const PL_option_t read_term_options[] =
 };
 
 
-#define read_term_from_stream(s, term, options) LDFUNC(read_term_from_stream, s, term, options)
+#define read_term_from_stream(s, term, options) \
+	LDFUNC(read_term_from_stream, s, term, options)
+
 static foreign_t
 read_term_from_stream(DECL_LD IOSTREAM *s, term_t term, term_t options)
 { term_t tpos = 0;

@@ -63,7 +63,7 @@
 :- use_module(library(dcg/basics)).
 :- use_module(library(dcg/high_order)).
 :- use_module(library(http/http_open)).
-:- use_module(library(http/json)).
+:- use_module(library(json)).
 :- use_module(library(http/http_client), []).
 :- use_module(library(debug), [assertion/1]).
 :- use_module(library(pairs),
@@ -2222,11 +2222,13 @@ pack_rebuild :-
 pack_rebuild(Pack) :-
     current_pack(Pack, PackDir),
     !,
-    post_install_foreign(Pack, PackDir, [rebuild(true)]).
+    post_install_foreign(Pack, PackDir, [rebuild(true)]),
+	pack_attach(PackDir, [duplicate(replace)]).
 pack_rebuild(Pack) :-
     unattached_pack(Pack, PackDir),
     !,
-    post_install_foreign(Pack, PackDir, [rebuild(true)]).
+    post_install_foreign(Pack, PackDir, [rebuild(true)]),
+	pack_attach(PackDir, [duplicate(replace)]).
 pack_rebuild(Pack) :-
     existence_error(pack, Pack).
 
@@ -2799,9 +2801,33 @@ version_part(Int) --> integer(Int).
 		 *           GIT LOGIC		*
 		 *******************************/
 
-have_git :-
-    process_which(path(git), _).
+%!  have_git is semidet.
+%
+%   True if we have the `git` program.   This could be simple, but Apple
+%   decided to include a fake  `/usr/bin/git`   that  triggers the Xcode
+%   installation. So, if we find `git` at `/usr/bin/git` we should check
+%   that Xcode is properly enabled. This   is the case if ``xcode-select
+%   -p`` points at an Xcode installation. Note  that if we find `git` at
+%   some other location,  we  assume  it   is  installed  by  the  user,
+%   Macports, Homebrew or something else.
 
+have_git :-
+    process_which(path(git), GIT),
+    is_sane_git(GIT).
+
+:- if(current_prolog_flag(apple, true)).
+sane_xcode_path -->
+    "Xcode.app/Contents".
+sane_xcode_path -->
+    "CommandLineTools".
+
+is_sane_git('/usr/bin/git') :-
+    !,
+    process_which(path('xcode-select'), XSpath),
+    catch(run_process(XSpath,['-p'],[output(Output),error(_)]), error(_,_), fail),
+    once(phrase((string(_), sane_xcode_path), Output, _)).
+:- endif.
+is_sane_git(_).
 
 %!  git_url(+URL, -Pack) is semidet.
 %

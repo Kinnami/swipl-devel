@@ -223,7 +223,7 @@ freeHeap(void *mem, size_t n)
 
 void
 linger_always(linger_list** list, void (*unalloc)(void *), void *object)
-{ if ( GD->cleaning != CLN_DATA )
+{ if ( GD->halt.cleaning != CLN_DATA )
   { linger_list *c = allocHeapOrHalt(sizeof(*c));
     linger_list *o;
 
@@ -720,11 +720,15 @@ outOfStack(void *stack, stack_overflow_action how)
       }
       exception_term = exception_bin;
 
+#if O_THROW
       if ( how == STACK_OVERFLOW_THROW &&
 	   LD->exception.throw_environment )
       {						/* see PL_throw() */
 	longjmp(LD->exception.throw_environment->exception_jmp_env, 1);
       }
+#else
+      PL_fatal_error("Could not handle stack overflow");
+#endif
 
       return false;
     }
@@ -804,14 +808,8 @@ Word
 allocGlobal(DECL_LD size_t n)
 { Word result;
 
-  if ( !hasGlobalSpace(n) )
-  { int rc;
-
-    if ( (rc=ensureGlobalSpace(n, ALLOW_GC)) != true )
-    { raiseStackOverflow(rc);
-      return NULL;
-    }
-  }
+  if ( !ensureGlobalSpace(n, ALLOW_GC) )
+    return NULL;
 
   result = gTop;
   gTop += n;

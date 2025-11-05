@@ -3075,27 +3075,19 @@ API_STUB(bool)
 bool
 _PL_put_xpce_reference_i(term_t t, uintptr_t i)
 { GET_LD
-  Word p;
-  word w;
-
   valid_term_t(t);
-  if ( !hasGlobalSpace(2) )
-  { int rc;
+  Word a = allocGlobal(2);
 
-    if ( (rc=ensureGlobalSpace(2, ALLOW_GC)) != true )
-      return raiseStackOverflow(rc);
+  if ( a )
+  { word w = consInt(i);
+    assert(valInt(w) == i);
+
+    setHandle(t, consPtr(a, TAG_COMPOUND|STG_GLOBAL));
+    *a++ = FUNCTOR_at_sign1;
+    *a++ = w;
+    return true;
   }
-
-  w = consInt(i);
-  assert(valInt(w) == i);
-
-  p = gTop;
-  gTop += 2;
-  setHandle(t, consPtr(p, TAG_COMPOUND|STG_GLOBAL));
-  *p++ = FUNCTOR_at_sign1;
-  *p++ = w;
-
-  return true;
+  return false;
 }
 
 
@@ -4738,7 +4730,7 @@ PL_raise_exception(term_t exception)
   return false;
 }
 
-
+#if O_THROW
 bool
 PL_throw(term_t exception)
 { GET_LD
@@ -4760,6 +4752,7 @@ PL_rethrow(void)
 
   return false;
 }
+#endif /*O_THROW*/
 
 
 void
@@ -5017,7 +5010,7 @@ __asan_default_options(), providing an alternative   to  the environment
 variable LSAN_OPTIONS=.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-static int
+static bool
 haltProlog(int status)
 { status |= PL_CLEANUP_NO_RECLAIM_MEMORY;
 
@@ -5036,19 +5029,49 @@ haltProlog(int status)
   }
 }
 
+/* Halt the system.  The idea is to stop all threads using exitPrologThreads(),
+   cleanup everything and exit() using the exit status. If supported by
+   the environment, we terminate by raising the exception
+   unwind(halt(Status)). This allows user code to cleanup on the halt
+   exception.   This schema is used by query_loop(), where we ultimately
+   halt after the exception bubbles up to this function and query_loop()
+   calls halt_from_exception().
+
+   If halting is not initiated from the main thread, we signal the main
+   thread, after which we call Pause().   If Pause() returns false, this
+   implies exitPrologThreads() called from the main thread is activated
+   and we forward the exception. If Pause() returns true, the main
+   thread seems incapable of processing the signal and we forcefully
+   shut down the process from the initiating thread.
+ */
+
 bool
 PL_halt(int status)
-{ int code = (status&PL_CLEANUP_STATUS_MASK);
+{ GD->halt.status = status;
+  GD->halt.thread = PL_thread_self();
 
-  GD->halt_status = code;
+#ifdef O_PLMT
+  if ( GD->halt.thread != 1 )
+  { PL_thread_raise(1, SIG_PLHALT);
+    if ( Pause(halt_grace_time()) )
+    { haltProlog(status);	/* Main thread does not acknowledge */
+      exit(status);
+    } else			/* We are signalled, so all done */
+    { return false;
+    }
+  }
+#endif
+
   if ( (status & PL_HALT_WITH_EXCEPTION) &&
-       raise_halt_exception(code, false) )
+       raise_halt_exception(status, false) )
     return false;
 
   if ( haltProlog(status) )
     exit(status);
 
-  GD->halt_status = 0;		/* cancelled */
+  GD->halt.status = 0;		/* cancelled */
+  GD->halt.thread = 0;
+
   return true;
 }
 
@@ -5346,10 +5369,8 @@ PL_dispatch_hook(PL_dispatch_hook_t hook)
 #endif
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-Note that this is  used  to   integrate  X11  event-dispatching into the
-SWI-Prolog  toplevel.  Integration  of  event-handling   in  Windows  is
-achieved through the plterm DLL (see  win32/console). For this reason we
-do never want this code in Windows.
+Note that this is  used  to   integrate  SDL  event-dispatching into the
+SWI-Prolog  toplevel.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static bool
@@ -5507,8 +5528,11 @@ PL_set_prolog_flag(const char *name, int type, ...)
     switch(type & ~FF_MASK)
     { case PL_BOOL:
       { int val = va_arg(args, int);
+	unsigned int index = 0;
 
-	setPrologFlag(name, FT_BOOL|flags, val, 0);
+	if ( strcmp(name, "tty_control") == 0 ) /* TODO: Generalize */
+	  index = PLFLAG_TTY_CONTROL;
+	setPrologFlag(name, FT_BOOL|flags, val, index);
 	break;
       }
       case PL_ATOM:
@@ -5743,7 +5767,7 @@ PL_query(int query)
       return (intptr_t)(cpu*1000.0);
     }
     case PL_QUERY_HALTING:
-    { return (GD->cleaning == CLN_NORMAL ? false : true);
+    { return (GD->halt.cleaning == CLN_NORMAL ? false : true);
     }
     default:
       sysError("PL_query: Illegal query: %d", query);

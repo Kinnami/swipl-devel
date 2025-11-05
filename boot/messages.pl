@@ -47,7 +47,8 @@
     prolog:message_context//1,      % Context of error messages
     prolog:deprecated//1,	    % Deprecated features
     prolog:message_location//1,     % (File) location of error messages
-    prolog:message_line_element/2.  % Extend printing
+    prolog:message_line_element/2,  % Extend printing
+    prolog:message_action/2.        % Side effects (broadcast)
 :- '$hide'((
     prolog:message//1,
     prolog:error_message//1,
@@ -222,7 +223,11 @@ iso_message(existence_error(Type, Object, In)) --> % not ISO
 iso_message(busy(Type, Object)) -->
     [ '~w `~p'' is busy'-[Type, Object] ].
 iso_message(syntax_error(swi_backslash_newline)) -->
-    [ 'Deprecated ... \\<newline><white>*.  Use \\c' ].
+    [ 'Deprecated: ... \\<newline><white>*.  Use \\c' ].
+iso_message(syntax_error(warning_var_tag)) -->
+    [ 'Deprecated: dict with unbound tag (_{...}).  Mapped to #{...}.' ].
+iso_message(syntax_error(var_tag)) -->
+    [ 'Syntax error: dict syntax with unbound tag (_{...}).' ].
 iso_message(syntax_error(Id)) -->
     [ 'Syntax error: ' ],
     syntax_error(Id).
@@ -1566,14 +1571,15 @@ prolog_message(history(expanded(Event))) -->
     [ '~w.'-[Event] ].
 prolog_message(history(history(Events))) -->
     history_events(Events).
+prolog_message(history(no_history)) -->
+    [ '! event history not supported in this version' ].
 
 history_events([]) -->
     [].
-history_events([Nr/Event|T]) -->
-    [ '~t~w   ~8|~W~W'-[ Nr,
-                         Event, [partial(true)],
-                         '.', [partial(true)]
-                       ],
+history_events([Nr-Event|T]) -->
+    [ ansi(comment, '%', []),
+      ansi(bold, '~t~w ~6|', [Nr]),
+      ansi(code, '~s', [Event]),
       nl
     ],
     history_events(T).
@@ -1602,13 +1608,14 @@ user_version_message(Atom) -->
                  *******************************/
 
 prolog_message(spy(Head)) -->
-    { goal_to_predicate_indicator(Head, Pred)
-    },
-    [ 'Spy point on ~p'-[Pred] ].
+    [ 'New spy point on ' ],
+    goal_predicate(Head).
+prolog_message(already_spying(Head)) -->
+    [ 'Already spying ' ],
+    goal_predicate(Head).
 prolog_message(nospy(Head)) -->
-    { goal_to_predicate_indicator(Head, Pred)
-    },
-    [ 'Spy point removed from ~p'-[Pred] ].
+    [ 'Removed spy point from ' ],
+    goal_predicate(Head).
 prolog_message(trace_mode(OnOff)) -->
     [ 'Trace mode switched to ~w'-[OnOff] ].
 prolog_message(debug_mode(OnOff)) -->
@@ -1881,6 +1888,8 @@ deprecated(source_search_working_directory(File, _FullFile)) -->
       'the Prolog flag ',
       ansi(code, source_search_working_directory, []), '.', nl
     ].
+deprecated(moved_library(Old, New)) -->
+    [ 'Library was moved: ~q --> ~q'-[Old, New] ].
 
 load_file(File) -->
     { file_base_name(File, Base),
@@ -2064,7 +2073,7 @@ print_message(Level, Term) :-
 print_message(Level, Term) :-
     (   Level \== silent
     ->  format(user_error, 'Recursive ~w message: ~q~n', [Level, Term]),
-        backtrace(20)
+        autoload_call(backtrace(20))
     ;   true
     ).
 
@@ -2085,7 +2094,11 @@ pop_msg(Stack) :-
 
 print_message_guarded(Level, Term) :-
     (   must_print(Level, Term)
-    ->  (   translate_message(Term, Lines, [])
+    ->  (   prolog:message_action(Term, Level),
+            fail                                % forall/2 is cleaner, but not yet
+        ;   true                                % defined
+        ),
+        (   translate_message(Term, Lines, [])
         ->  (   nonvar(Term),
                 (   notrace(user:thread_message_hook(Term, Level, Lines))
                 ->  true

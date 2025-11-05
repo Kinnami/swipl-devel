@@ -1118,8 +1118,7 @@ dummy_handler(int sig)
 }
 #endif
 
-#ifdef O_PLMT
-static double
+double
 halt_grace_time(void)
 { GET_LD
   fid_t fid;
@@ -1137,7 +1136,6 @@ halt_grace_time(void)
 
   return t;
 }
-#endif
 
 bool
 exitPrologThreads(void)
@@ -1147,7 +1145,7 @@ exitPrologThreads(void)
   int me = PL_thread_self();
   int canceled = 0;
 
-  DEBUG(MSG_THREAD, Sdprintf("exitPrologThreads(): me = %d\n", me));
+  DEBUG(MSG_CLEANUP_THREAD, Sdprintf("exitPrologThreads(): me = %d\n", me));
 
   sem_init(sem_canceled_ptr, USYNC_THREAD, 0);
 
@@ -1190,7 +1188,7 @@ exitPrologThreads(void)
 	    if ( PL_thread_raise(i, SIG_PLHALT) )
 	    { DEBUG(MSG_CLEANUP_THREAD,
 		    Sdprintf("Sent unwind(halt(%d)) to %d\n",
-			     GD->halt_status, i));
+			     GD->halt.status&PL_CLEANUP_STATUS_MASK, i));
 	      canceled++;
 	    }
 	  }
@@ -1204,9 +1202,9 @@ exitPrologThreads(void)
   }
 
   if ( canceled > 0 )		    /* see (*) above */
-  { double grace_time = halt_grace_time();
-
+  {
 #ifdef USE_TIMER_WAIT
+    double grace_time = halt_grace_time();
     DEBUG(MSG_CLEANUP_THREAD,
 	  Sdprintf("Waiting for %d threads (alarm timer)\n", canceled));
     struct itimerval timeout = {0};
@@ -1234,6 +1232,7 @@ exitPrologThreads(void)
     }
 
 #elif defined(HAVE_SEM_TIMEDWAIT)
+    double grace_time = halt_grace_time();
     DEBUG(MSG_CLEANUP_THREAD, Sdprintf("Waiting for %d threads (sem_timedwait)\n", canceled));
     struct timespec deadline;
 
@@ -1376,7 +1375,7 @@ may be gone even before it is   locked. However, locking is not unlikely
 to deadlock during crash analysis ...
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-int
+bool
 PL_get_thread_alias(int tid, atom_t *alias)
 { PL_thread_info_t *info;
   thread_handle *th;
@@ -1475,7 +1474,7 @@ thread_gc_loop(void *closure)
     } while ( h && !COMPARE_AND_SWAP_PTR(&gced_threads, h, h->next_free) );
 
     if ( h )
-    { if ( GD->cleaning == CLN_NORMAL )
+    { if ( GD->halt.cleaning == CLN_NORMAL )
 	discard_thread(h);
       PL_free(h);
     } else
@@ -1511,7 +1510,7 @@ start_thread_gc_thread(void)
 
 static void
 gc_thread(thread_handle *ref)
-{ if ( GD->cleaning == CLN_NORMAL )	/* otherwise we are terminating */
+{ if ( GD->halt.cleaning == CLN_NORMAL )	/* otherwise we are terminating */
   {
 #ifdef O_PLMT
     thread_handle *h;
@@ -1703,7 +1702,7 @@ PL_unify_thread_id(term_t t, int i)
 }
 
 
-int
+bool
 PL_get_thread_id_ex(term_t t, int *idp)
 { PL_thread_info_t *info;
 
@@ -1717,7 +1716,7 @@ PL_get_thread_id_ex(term_t t, int *idp)
 
 
 
-#ifdef __WINDOWS__
+#if defined(__WINDOWS__) && defined(O_PLMT)
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 PL_w32thread_raise(DWORD id, int sig)
@@ -1973,7 +1972,9 @@ threadName(int id)
 
 intptr_t
 system_thread_id(PL_thread_info_t *info)
-{ if ( !info )
+{
+#ifdef O_PLMT
+  if ( !info )
   { GET_LD
     if ( LD )
       info = LD->thread.info;
@@ -1988,6 +1989,9 @@ system_thread_id(PL_thread_info_t *info)
 #else
   return (intptr_t)info->tid;
 #endif
+#endif
+#else/*O_PLMT*/
+  return -1;
 #endif
 }
 
@@ -2220,6 +2224,7 @@ copy_local_data(PL_local_data_t *ldnew, PL_local_data_t *ldold,
   ldnew->prolog_flag.unknown_option = ldold->prolog_flag.unknown_option;
 #ifdef O_BIGNUM
   ldnew->arith.rat                = ldold->arith.rat;
+  ldnew->gmp.max_integer_size	  = ldold->gmp.max_integer_size;
 #endif
   ldnew->arith.f                  = ldold->arith.f;
   if ( ldold->prolog_flag.table )
@@ -2325,7 +2330,7 @@ pl_thread_create(term_t goal, term_t id, term_t options)
   if ( !PL_is_callable(goal) )
     return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_callable, goal);
 
-  if ( !GD->thread.enabled || GD->cleaning != CLN_NORMAL )
+  if ( !GD->thread.enabled || GD->halt.cleaning != CLN_NORMAL )
     return PL_error(NULL, 0, "threading disabled",
 		      ERR_PERMISSION,
 		      ATOM_create, ATOM_thread, goal);
@@ -2936,6 +2941,38 @@ PRED_IMPL("thread_alias", 1, thread_alias, 0)
 	   aliasThread(PL_thread_self(), ATOM_thread, alias) );
 }
 
+static
+PRED_IMPL("set_thread", 2, set_thread, 0)
+{ PRED_LD
+  PL_thread_info_t *info;
+  atom_t name;
+  size_t arity;
+
+  if ( PL_get_atom(A1, &name) && name == ATOM_self )
+  { info = LD->thread.info;
+  } else if ( !get_thread(A1, &info, true) )
+  { return false;
+  }
+
+  if ( PL_get_name_arity(A2, &name, &arity) && arity == 1 )
+  { term_t arg = PL_new_term_ref();
+    _PL_get_arg(1, A2, arg);
+
+    if ( name == ATOM_debug )
+    { int val;
+      if ( PL_get_bool_ex(arg, &val) )
+      { info->debug = val;
+	return true;
+      }
+      return false;
+    } else
+    { return PL_domain_error("thread_property", A2);
+    }
+  } else
+    return PL_type_error("property", A2);
+}
+
+
 #endif /*O_PLMT*/
 
 static size_t
@@ -2979,19 +3016,19 @@ symbol_alias(atom_t symbol)
   return NULL_ATOM;
 }
 
-#define thread_id_propery(info, prop) LDFUNC(thread_id_propery, info, prop)
-static int
-thread_id_propery(DECL_LD void *ctx, term_t prop)
+#define thread_id_property(info, prop) LDFUNC(thread_id_property, info, prop)
+static bool
+thread_id_property(DECL_LD void *ctx, term_t prop)
 { PL_thread_info_t *info = ctx;
 
   return PL_unify_integer(prop, info->pl_tid);
 }
 
-#define thread_alias_propery(info, prop) \
-	LDFUNC(thread_alias_propery, info, prop)
+#define thread_alias_property(info, prop) \
+	LDFUNC(thread_alias_property, info, prop)
 
-static int
-thread_alias_propery(DECL_LD void *ctx, term_t prop)
+static bool
+thread_alias_property(DECL_LD void *ctx, term_t prop)
 { PL_thread_info_t *info = ctx;
   atom_t symbol, alias;
 
@@ -2999,48 +3036,58 @@ thread_alias_propery(DECL_LD void *ctx, term_t prop)
        (alias=symbol_alias(symbol)) )
     return PL_unify_atom(prop, alias);
 
-  fail;
+  return false;
 }
 
-#define thread_status_propery(info, prop) LDFUNC(thread_status_propery, info, prop)
-static int
-thread_status_propery(DECL_LD void *ctx, term_t prop)
+#define thread_status_property(info, prop) \
+	LDFUNC(thread_status_property, info, prop)
+
+static bool
+thread_status_property(DECL_LD void *ctx, term_t prop)
 { IGNORE_LD
   PL_thread_info_t *info = ctx;
 
   return unify_thread_status(prop, info, info->status, true);
 }
 
-#define thread_detached_propery(info, prop) LDFUNC(thread_detached_propery, info, prop)
-static int
-thread_detached_propery(DECL_LD void *ctx, term_t prop)
+#define thread_detached_property(info, prop) \
+	LDFUNC(thread_detached_property, info, prop)
+
+static bool
+thread_detached_property(DECL_LD void *ctx, term_t prop)
 { IGNORE_LD
   PL_thread_info_t *info = ctx;
 
   return PL_unify_bool_ex(prop, info->detached);
 }
 
-#define thread_debug_propery(info, prop) LDFUNC(thread_debug_propery, info, prop)
-static int
-thread_debug_propery(DECL_LD void *ctx, term_t prop)
+#define thread_debug_property(info, prop) \
+	LDFUNC(thread_debug_property, info, prop)
+
+static bool
+thread_debug_property(DECL_LD void *ctx, term_t prop)
 { IGNORE_LD
   PL_thread_info_t *info = ctx;
 
   return PL_unify_bool_ex(prop, info->debug);
 }
 
-#define thread_engine_propery(info, prop) LDFUNC(thread_engine_propery, info, prop)
-static int
-thread_engine_propery(DECL_LD void *ctx, term_t prop)
+#define thread_engine_property(info, prop) \
+	LDFUNC(thread_engine_property, info, prop)
+
+static bool
+thread_engine_property(DECL_LD void *ctx, term_t prop)
 { IGNORE_LD
   PL_thread_info_t *info = ctx;
 
   return PL_unify_bool_ex(prop, info->is_engine);
 }
 
-#define thread_thread_propery(info, prop) LDFUNC(thread_thread_propery, info, prop)
-static int
-thread_thread_propery(DECL_LD void *ctx, term_t prop)
+#define thread_thread_property(info, prop) \
+	LDFUNC(thread_thread_property, info, prop)
+
+static bool
+thread_thread_property(DECL_LD void *ctx, term_t prop)
 { PL_thread_info_t *info = ctx;
 
   if ( info->is_engine )
@@ -3056,9 +3103,11 @@ thread_thread_propery(DECL_LD void *ctx, term_t prop)
   return false;
 }
 
-#define thread_tid_propery(info, prop) LDFUNC(thread_tid_propery, info, prop)
-static int
-thread_tid_propery(DECL_LD void *ctx, term_t prop)
+#define thread_tid_property(info, prop) \
+	LDFUNC(thread_tid_property, info, prop)
+
+static bool
+thread_tid_property(DECL_LD void *ctx, term_t prop)
 { IGNORE_LD
   PL_thread_info_t *info = ctx;
 
@@ -3072,9 +3121,11 @@ thread_tid_propery(DECL_LD void *ctx, term_t prop)
   return false;
 }
 
-#define thread_size_propery(info, prop) LDFUNC(thread_size_propery, info, prop)
-static int
-thread_size_propery(DECL_LD void *ctx, term_t prop)
+#define thread_size_property(info, prop) \
+	LDFUNC(thread_size_property, info, prop)
+
+static bool
+thread_size_property(DECL_LD void *ctx, term_t prop)
 { size_t size;
   PL_thread_info_t *info = ctx;
 
@@ -3089,15 +3140,15 @@ thread_size_propery(DECL_LD void *ctx, term_t prop)
 }
 
 static const tprop tprop_list [] =
-{ { FUNCTOR_id1,	       LDFUNC_REF(thread_id_propery) },
-  { FUNCTOR_alias1,	       LDFUNC_REF(thread_alias_propery) },
-  { FUNCTOR_status1,	       LDFUNC_REF(thread_status_propery) },
-  { FUNCTOR_detached1,	       LDFUNC_REF(thread_detached_propery) },
-  { FUNCTOR_debug1,	       LDFUNC_REF(thread_debug_propery) },
-  { FUNCTOR_engine1,	       LDFUNC_REF(thread_engine_propery) },
-  { FUNCTOR_thread1,	       LDFUNC_REF(thread_thread_propery) },
-  { FUNCTOR_system_thread_id1, LDFUNC_REF(thread_tid_propery) },
-  { FUNCTOR_size1,	       LDFUNC_REF(thread_size_propery) },
+{ { FUNCTOR_id1,	       LDFUNC_REF(thread_id_property) },
+  { FUNCTOR_alias1,	       LDFUNC_REF(thread_alias_property) },
+  { FUNCTOR_status1,	       LDFUNC_REF(thread_status_property) },
+  { FUNCTOR_detached1,	       LDFUNC_REF(thread_detached_property) },
+  { FUNCTOR_debug1,	       LDFUNC_REF(thread_debug_property) },
+  { FUNCTOR_engine1,	       LDFUNC_REF(thread_engine_property) },
+  { FUNCTOR_thread1,	       LDFUNC_REF(thread_thread_property) },
+  { FUNCTOR_system_thread_id1, LDFUNC_REF(thread_tid_property) },
+  { FUNCTOR_size1,	       LDFUNC_REF(thread_size_property) },
   { 0,			       NULL }
 };
 
@@ -3340,8 +3391,8 @@ Request a function to run when the Prolog thread is about to detach, but
 still capable of running Prolog queries.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-int
-PL_thread_at_exit(void (*function)(void *), void *closure, int global)
+bool
+PL_thread_at_exit(void (*function)(void *), void *closure, bool global)
 { GET_LD
   event_list **list = global ? &GD->event.hook.onthreadexit
 			     : &LD->event.hook.onthreadexit;
@@ -5583,20 +5634,24 @@ PRED_IMPL("is_message_queue", 1, is_message_queue, 0)
 		 *    MESSAGE QUEUE PROPERTY	*
 		 *******************************/
 
-#define message_queue_alias_property(q, prop) LDFUNC(message_queue_alias_property, q, prop)
-static int		/* message_queue_property(Queue, alias(Name)) */
+#define message_queue_alias_property(q, prop) \
+	LDFUNC(message_queue_alias_property, q, prop)
+
+static bool		/* message_queue_property(Queue, alias(Name)) */
 message_queue_alias_property(DECL_LD void *ctx, term_t prop)
 { message_queue *q = ctx;
 
   if ( !q->anonymous )
     return PL_unify_atom(prop, q->id);
 
-  fail;
+  return false;
 }
 
 
-#define message_queue_size_property(q, prop) LDFUNC(message_queue_size_property, q, prop)
-static int		/* message_queue_property(Queue, size(Size)) */
+#define message_queue_size_property(q, prop) \
+	LDFUNC(message_queue_size_property, q, prop)
+
+static bool		/* message_queue_property(Queue, size(Size)) */
 message_queue_size_property(DECL_LD void *ctx, term_t prop)
 { message_queue *q = ctx;
 
@@ -5604,8 +5659,10 @@ message_queue_size_property(DECL_LD void *ctx, term_t prop)
 }
 
 
-#define message_queue_max_size_property(q, prop) LDFUNC(message_queue_max_size_property, q, prop)
-static int		/* message_queue_property(Queue, max_size(Size)) */
+#define message_queue_max_size_property(q, prop) \
+	LDFUNC(message_queue_max_size_property, q, prop)
+
+static bool		/* message_queue_property(Queue, max_size(Size)) */
 message_queue_max_size_property(DECL_LD void *ctx, term_t prop)
 { message_queue *q = ctx;
   size_t ms;
@@ -5613,11 +5670,13 @@ message_queue_max_size_property(DECL_LD void *ctx, term_t prop)
   if ( (ms=q->max_size) > 0 )
     return PL_unify_integer(prop, ms);
 
-  fail;
+  return false;
 }
 
-#define message_queue_waiting_property(q, prop) LDFUNC(message_queue_waiting_property, q, prop)
-static int		/* message_queue_property(Queue, waiting(Count)) */
+#define message_queue_waiting_property(q, prop) \
+	LDFUNC(message_queue_waiting_property, q, prop)
+
+static bool		/* message_queue_property(Queue, waiting(Count)) */
 message_queue_waiting_property(DECL_LD void *ctx, term_t prop)
 { message_queue *q = ctx;
   int waiting;
@@ -5625,7 +5684,7 @@ message_queue_waiting_property(DECL_LD void *ctx, term_t prop)
   if ( (waiting=q->waiting) > 0 )
     return PL_unify_integer(prop, waiting);
 
-  fail;
+  return false;
 }
 
 static const tprop qprop_list [] =
@@ -6659,7 +6718,7 @@ PL_thread_attach_engine(PL_thread_attr_t *attr)
   }
 
 #ifdef O_PLMT
-  if ( !GD->thread.enabled || GD->cleaning != CLN_NORMAL )
+  if ( !GD->thread.enabled || GD->halt.cleaning != CLN_NORMAL )
   {
 #ifdef EPERM				/* FIXME: Better reporting */
     errno = EPERM;
@@ -6775,8 +6834,8 @@ detach_engine(PL_engine_t e)
 #ifdef __WINDOWS__
   info->w32id = 0;
 #endif
-#endif
   memset(&info->tid, 0, sizeof(info->tid));
+#endif
   info->c_stack = NULL;
 }
 
@@ -8025,7 +8084,7 @@ initPrologThreads(void)
 #endif
 }
 
-int
+bool
 PL_get_thread_alias(int tid, atom_t *alias)
 { *alias = ATOM_main;
   return true;
@@ -8203,7 +8262,7 @@ Definition*
 predicates_in_use(void)
 {
 #ifdef O_PLMT
-  if ( GD->cleaning != CLN_DATA )
+  if ( GD->halt.cleaning != CLN_DATA )
   { int i, index=0;
     size_t sz = 32;
 
@@ -8520,6 +8579,7 @@ BeginPredDefs(thread)
 
 #ifdef O_PLMT
   PRED_DEF("thread_alias",           1, thread_alias,	       0)
+  PRED_DEF("set_thread",             2, set_thread,            0)
   PRED_DEF("thread_detach",	     1,	thread_detach,	       PL_FA_ISO)
   PRED_DEF("thread_join",	     2,	thread_join,	       0)
   PRED_DEF("thread_exit",            1, thread_exit,           0)

@@ -241,7 +241,7 @@ clearSourceAdmin(atom_t sf_name)
   fid_t fid;
   predicate_t pred;
 
-  if ( GD->cleaning == CLN_DATA )
+  if ( GD->halt.cleaning == CLN_DATA )
     return true;
 
   pred = _PL_predicate("$clear_source_admin", 1, "system",
@@ -1886,7 +1886,7 @@ PRED_IMPL("$clause_from_source", 4, clause_from_source, 0)
 
     for(; clp < elp; clp++)
     { if ( !PL_unify_list(tail, head, tail) ||
-	   !PL_unify_clref(head, c) )
+	   !PL_unify_clref(head, *clp) )
       { rc = false;
 	break;
       }

@@ -39,6 +39,24 @@
 #define _PL_PROLOGFLAG_H
 #include "../pl-incl.h"
 
+typedef struct oneof
+{ size_t	count;
+  int		references;
+  atom_t       *values;
+} oneof;
+
+typedef struct _prolog_flag
+{ unsigned short flags;			/* Type | Flags */
+  short		index;			/* index in LD->prolog_flag.mask */
+  union
+  { atom_t	a;			/* value as atom */
+    int64_t	i;			/* value as integer */
+    double	f;			/* value as float */
+    record_t	t;			/* value as term */
+  } value;
+  oneof        *oneof;
+} prolog_flag;
+
 		 /*******************************
 		 *    FUNCTION DECLARATIONS	*
 		 *******************************/
@@ -47,13 +65,14 @@
 void		setPrologFlag(const char *name, unsigned int flags, ...);
 int		set_prolog_flag(term_t key, term_t value, unsigned short flags);
 bool		PL_get_prolog_flag(atom_t name, term_t value);
-int		setDoubleQuotes(atom_t a, unsigned int *flagp);
-int		setBackQuotes(atom_t a, unsigned int *flagp);
-int		setRationalSyntax(atom_t a, unsigned int *flagp);
+bool		setDoubleQuotes(atom_t a, unsigned int *flagp);
+bool		setBackQuotes(atom_t a, unsigned int *flagp);
+bool		setRationalSyntax(atom_t a, unsigned int *flagp);
 void		initPrologFlags(void);
 void		setABIVersionPrologFlag(void);
 void		cleanupPrologFlags(void);
-int		checkPrologFlagsAccess(void);
+bool		checkPrologFlagsAccess(void);
+prolog_flag *	current_prolog_flag(const char *name);
 #undef LDFUNC_DECLARATIONS
 
 #endif /*_PL_PROLOGFLAG_H*/

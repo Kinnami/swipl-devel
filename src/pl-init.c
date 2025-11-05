@@ -699,9 +699,7 @@ setupGNUEmacsInferiorMode(void)
   if ( ((s = Getenv("EMACS", envbuf, sizeof(envbuf))) && s[0]) ||
        ((s = Getenv("INSIDE_EMACS", envbuf, sizeof(envbuf))) && s[0]) ||
        ((s = Getenv("INFERIOR", envbuf, sizeof(envbuf))) && streq(s, "yes")) )
-  { GET_LD
-
-    clearPrologFlagMask(PLFLAG_TTY_CONTROL);
+  { PL_set_prolog_flag("tty_control", PL_BOOL, false);
     val = true;
 #ifdef __WINDOWS__
     Sinput->flags  |= SIO_ISATTY;
@@ -841,10 +839,12 @@ initDefaults(void)
   GD->signals.sig_alert      = SIG_ALERT;
 #endif
 
-  if ( systemDefaults.notty )
-    clearPrologFlagMask(PLFLAG_TTY_CONTROL);
-  else
-    setPrologFlagMask(PLFLAG_TTY_CONTROL);
+  if ( !current_prolog_flag("tty_control") )
+  { if ( systemDefaults.notty )
+      clearPrologFlagMask(PLFLAG_TTY_CONTROL);
+    else
+      setPrologFlagMask(PLFLAG_TTY_CONTROL);
+  }
 
   setPrologFlagMask(PLFLAG_DEBUGINFO);
   setPrologFlagMask(PLFLAG_GCTHREAD);
@@ -1018,11 +1018,8 @@ parseCommandLineOptions(int argc0, char **argv0, char **argvleft)
 	  return -1;
       } else if ( (rc=is_bool_opt(s, "tty", &b)) )
       { if ( rc == true )
-	{ if ( b )
-	    setPrologFlagMask(PLFLAG_TTY_CONTROL);
-	  else
-	    clearPrologFlagMask(PLFLAG_TTY_CONTROL);
-	} else
+	  PL_set_prolog_flag("tty_control", PL_BOOL, b);
+	else
 	  return -1;
       } else if ( (rc=is_bool_opt(s, "pce", &b)) )
       { if ( rc == true )
@@ -1098,7 +1095,7 @@ parseCommandLineOptions(int argc0, char **argv0, char **argvleft)
 
     if ( streq(s, "tty") )
     { Sdprintf("Warning: `-tty` is deprecated.  Please use `--no-tty`\n");
-      clearPrologFlagMask(PLFLAG_TTY_CONTROL);
+      PL_set_prolog_flag("tty_control", PL_BOOL, false);
       continue;
     }
 
@@ -1436,6 +1433,13 @@ PL_initialise(int argc, char **argv)
   GD->cmdline.appl_argc = argc;
   GD->cmdline.appl_argv = argv;
 
+#ifdef __WINDOWS__
+  if ( truePrologFlag(PLFLAG_TTY_CONTROL) &&
+       !truePrologFlag(PLFLAG_EPILOG) )
+    PL_w32_wrap_ansi_console();	/* decode ANSI color sequences (ESC[...m) */
+  else
+    PL_set_prolog_flag("color_term", PL_BOOL, false);
+#endif
   setupGNUEmacsInferiorMode();		/* Detect running under EMACS */
 
   if ( !setupProlog() )
@@ -1761,7 +1765,7 @@ PL_cleanup(int status)
   int asked_reclaim_memory = (status&PL_CLEANUP_NO_RECLAIM_MEMORY) == 0;
   int reclaim_memory = asked_reclaim_memory;
 
-  if ( GD->cleaning != CLN_NORMAL )
+  if ( GD->halt.cleaning != CLN_NORMAL )
     return PL_CLEANUP_RECURSIVE;
 
   checkPrologFlagsAccess();
@@ -1772,7 +1776,7 @@ PL_cleanup(int status)
 #endif
 
   PL_LOCK(L_INIT);
-  if ( GD->cleaning != CLN_NORMAL )
+  if ( GD->halt.cleaning != CLN_NORMAL )
   { PL_UNLOCK(L_INIT);
     return PL_CLEANUP_RECURSIVE;
   }
@@ -1788,7 +1792,7 @@ PL_cleanup(int status)
   GET_LD
 #endif
 
-  GD->cleaning = CLN_PROLOG;
+  GD->halt.cleaning = CLN_PROLOG;
   debugmode(false, NULL);		/* avoid recursive tracing */
 
   if ( GD->initialised )
@@ -1800,18 +1804,18 @@ PL_cleanup(int status)
     PL_set_prolog_flag("exit_status", PL_INTEGER, (intptr_t)rval);
     if ( query_loop(PL_new_atom("$run_at_halt"), false) == false &&
 	 !(status&PL_CLEANUP_NO_CANCEL) )
-    { if ( ++GD->halt_cancelled	< MAX_HALT_CANCELLED )
-      { GD->cleaning = CLN_NORMAL;
+    { if ( ++GD->halt.cancelled	< MAX_HALT_CANCELLED )
+      { GD->halt.cleaning = CLN_NORMAL;
 	PL_UNLOCK(L_INIT);
 	return PL_CLEANUP_CANCELED;
       }
     }
 
-    GD->cleaning = CLN_FOREIGN;
+    GD->halt.cleaning = CLN_FOREIGN;
     if ( !run_on_halt(&GD->os.on_halt_list, rval) &&
 	 !(status&PL_CLEANUP_NO_CANCEL) )
-    { if ( ++GD->halt_cancelled	< MAX_HALT_CANCELLED )
-      { GD->cleaning = CLN_NORMAL;
+    { if ( ++GD->halt.cancelled	< MAX_HALT_CANCELLED )
+      { GD->halt.cleaning = CLN_NORMAL;
 	PL_UNLOCK(L_INIT);
 	return PL_CLEANUP_CANCELED;
       }
@@ -1834,7 +1838,7 @@ PL_cleanup(int status)
 
 emergency:
 #endif
-  GD->cleaning = CLN_IO;
+  GD->halt.cleaning = CLN_IO;
 
   Scurout = Soutput;			/* reset output stream to user */
 
@@ -1842,7 +1846,7 @@ emergency:
   dieIO();				/* streams may refer to foreign code */
 					/* Standard I/O is only flushed! */
 
-  GD->cleaning = CLN_SHARED;
+  GD->halt.cleaning = CLN_SHARED;
 
   if ( GD->initialised )
   { fid_t cid = PL_open_foreign_frame();
@@ -1853,7 +1857,7 @@ emergency:
     PL_discard_foreign_frame(cid);
   }
 
-  GD->cleaning = CLN_DATA;
+  GD->halt.cleaning = CLN_DATA;
 
   RemoveTemporaryFiles();
 
@@ -2252,7 +2256,7 @@ static
 PRED_IMPL("$run_state", 1, run_state, 0)
 { const char *rstate;
 
-  switch(GD->cleaning)
+  switch(GD->halt.cleaning)
   { case CLN_NORMAL:
       rstate = "normal";
       break;

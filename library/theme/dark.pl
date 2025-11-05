@@ -137,6 +137,8 @@ style(goal(built_in,_),          [colour(cyan)]).
 style(goal(imported(_),_),       [colour(cyan)]).
 style(goal(autoload(_),_),       [colour(dark_cyan)]).
 style(goal(global,_),            [colour(dark_cyan)]).
+style(goal(global(dynamic,_),_), [colour(magenta)]).
+style(goal(global(_,_),_),       [colour(dark_cyan)]).
 style(goal(undefined,_),         [colour(orange)]).
 style(goal(thread_local(_),_),   [colour(magenta), underline(true)]).
 style(goal(dynamic(_),_),        [colour(magenta)]).
@@ -202,7 +204,7 @@ style(class(undefined,_),        [colour(red), underline(true)]).
 style(prolog_data,               [colour(cyan), underline(true)]).
 style(flag_name(_),              [colour(cyan)]).
 style(no_flag_name(_),           [colour(red)]).
-style(unused_import,             [colour(cyan), background(pink)]).
+style(unused_import,             [colour(cyan), background(maroon)]).
 style(undefined_import,          [colour(red)]).
 
 style(constraint(_),             [colour(darkcyan)]).

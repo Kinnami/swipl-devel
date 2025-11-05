@@ -78,8 +78,8 @@ set(SRC_CORE pl-atom.c pl-wam.c pl-arith.c pl-bag.c pl-error.c
     pl-load.c pl-modul.c pl-op.c pl-prims.c pl-pro.c
     pl-proc.c pl-prof.c pl-read.c pl-rec.c pl-setup.c
     pl-sys.c pl-trace.c pl-util.c pl-qlf.c pl-write.c
-    pl-term.c pl-thread.c pl-xterm.c pl-srcfile.c
-    pl-attvar.c pl-gvar.c pl-btree.c
+    pl-term.c pl-thread.c pl-srcfile.c
+    pl-attvar.c pl-gvar.c pl-btree.c pl-termset.c
     pl-init.c pl-gmp.c pl-segstack.c pl-hash.c
     pl-version.c pl-codetable.c pl-supervisor.c
     pl-dbref.c pl-termhash.c pl-variant.c pl-assert.c
@@ -173,12 +173,6 @@ endif()
 if(WIN32)
   list(APPEND SWIPL_DATA_library dde.pl progman.pl)
 endif()
-if(NOT EPILOG)
-  has_package(swipl-win HAVE_SWIPL_WIN)
-  if(HAVE_SWIPL_WIN OR WIN32)
-    list(APPEND SWIPL_DATA_library win_menu.pl)
-  endif()
-endif()
 if(EMSCRIPTEN)
   list(APPEND SWIPL_DATA_library wasm.pl dom.pl)
 else()
@@ -242,7 +236,10 @@ list(APPEND SWIPL_DATA_library_dialect_xsb timed_call.pl thread.pl)
 endif()
 
 if(NOT EMSCRIPTEN)
+has_package(table HAVE_TABLE)
+if(HAVE_TABLE)
 list(APPEND SWIPL_DATA_library_unicode  unicode_data.pl)
+endif()
 list(APPEND SWIPL_DATA_library_dialect_sicstus
      sockets.pl system.pl)
 if(MULTI_THREADED)
@@ -500,6 +497,12 @@ if(EPILOG)
 endif()
 
 # build the library
+if(EMSCRIPTEN)
+  set_source_files_properties(pl-wam.c
+			      PROPERTIES COMPILE_FLAGS
+			      "-O2")
+endif()
+
 if(SWIPL_SHARED_LIB AND NOT EMSCRIPTEN AND NOT STATIC_EXTENSIONS)
   set(LIBSWIPL_TYPE SHARED)
 else()
@@ -603,9 +606,7 @@ else()
   set(SWIPL_PROGRAM swipl)
 endif()
 
-if(WIN32)
-  include(WindowsTargets)
-elseif(EMSCRIPTEN)
+if(EMSCRIPTEN)
   include(EmscriptenTargets)
 elseif(ANDROID)
   include(AndroidTargets)

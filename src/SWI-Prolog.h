@@ -61,7 +61,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 90328
+#define PLVERSION 90334
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -210,11 +210,7 @@ typedef _PLS(PL_local_data) *PL_engine_t; /* opaque engine handle */
 typedef _PLQ(word)	PL_atomic_t;	/* same a word */
 typedef uintptr_t	foreign_t;	/* return type of foreign functions */
 typedef wchar_t		pl_wchar_t;	/* Prolog wide character */
-#ifdef __cplusplus
-typedef void *		pl_function_t;      /* pass function as void* */
-#else
-typedef foreign_t	(*pl_function_t)(); /* foreign language functions */
-#endif
+typedef void *		pl_function_t;  /* pass function as void* */
 typedef uintptr_t	buf_mark_t;	/* buffer mark handle */
 
 #define fid_t PL_fid_t			/* avoid AIX name-clash */
@@ -1342,16 +1338,18 @@ typedef struct
 
 PL_EXPORT(int)	PL_thread_self(void);	/* Prolog thread id (-1 if none) */
 PL_EXPORT(int)	PL_unify_thread_id(term_t t, int i);
-PL_EXPORT(int)	PL_get_thread_id_ex(term_t t, int *idp);
-PL_EXPORT(int)	PL_get_thread_alias(int tid, atom_t *alias);	/* Locks alias */
+PL_EXPORT(bool)	PL_get_thread_id_ex(term_t t, int *idp);
+PL_EXPORT(bool)	PL_get_thread_alias(int tid, atom_t *alias);	/* Locks alias */
 PL_EXPORT(int)	PL_thread_attach_engine(PL_thread_attr_t *attr);
 PL_EXPORT(bool)	PL_thread_destroy_engine(void);
-PL_EXPORT(int)	PL_thread_at_exit(void (*function)(void *),
+PL_EXPORT(bool)	PL_thread_at_exit(void (*function)(void *),
 				  void *closure,
-				  int global);
+				  bool global);
 PL_EXPORT(int)	PL_thread_raise(int tid, int sig);
 #if defined(_WINDOWS_) || defined(_WINDOWS_H)	/* <windows.h> is included */
 PL_EXPORT(bool)	PL_w32thread_raise(DWORD dwTid, int sig);
+#endif
+#ifdef __WINDOWS__
 PL_EXPORT(bool)	PL_w32_wrap_ansi_console(void);
 PL_EXPORT(const char*) PL_w32_running_under_wine(void);
 #endif
@@ -1416,15 +1414,15 @@ PL_EXPORT(int)		PL_advance_hash_table_enum(hash_table_enum_t e,
 		 *******************************/
 
 typedef struct
-{ int	(*unify)(term_t t, void *handle);	/* implementation --> Prolog */
-  int   (*get)(term_t t, void **handle);	/* Prolog --> implementation */
-  void	(*activate)(int active);		/* (de)activate */
+{ bool	(*unify)(term_t t, void *handle);	/* implementation --> Prolog */
+  bool  (*get)(term_t t, void **handle);	/* Prolog --> implementation */
+  void	(*activate)(bool active);		/* (de)activate */
   void  (*release)(void *handle);		/* Release handle */
   void *dummy[4];				/* reserved */
   intptr_t	magic;				/* PROFTYPE_MAGIC */
 } PL_prof_type_t;
 
-PL_EXPORT(int)		PL_register_profile_type(PL_prof_type_t *type);
+PL_EXPORT(bool)		PL_register_profile_type(PL_prof_type_t *type);
 PL_EXPORT(void*)	PL_prof_call(void *handle, PL_prof_type_t *type);
 PL_EXPORT(void)		PL_prof_exit(void *node);
 

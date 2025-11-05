@@ -213,6 +213,17 @@ timeout while signals are being tested after each timeout.  Such systems
 allow combining thread_join/2 with call_with_time_limit/2 as well as
 signalling threads blocked in thread_join/2 using thread_signal/2.
 
+    \predicate{set_thread}{2}{+Thread, +Property}
+Set a property for \arg{Thread}.  The currently defined properties are
+below.  Future versions of this predicate will absorb predicates such
+as thread_alias/1.
+
+    \begin{description}
+    \termitem{debug}{+Bool}
+    Set the debug mode for \arg{Thread}.  See also thread_create/3 and
+    thread_property/2.
+    \end{description}
+
     \predicate{thread_alias}{1}{+Alias}
 Set the alias name of the calling thread to \arg{Alias}.  An error is
 raised if the calling thread already has an alias or \arg{Alias} is
@@ -328,6 +339,10 @@ Defined properties are:
 \begin{description}
 	\termitem{alias}{Alias}
  \arg{Alias} is the alias name of thread \arg{Id}.
+
+	\termitem{debug}{Boolean}
+Whether the thread is a \jargon{debug} thread.   No-debug threads may be
+created using the \term{debug}{false} option of thread_create/3.
 
 	\termitem{detached}{Boolean}
 Current detached status of the thread.

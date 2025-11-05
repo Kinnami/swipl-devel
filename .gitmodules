@@ -66,7 +66,7 @@
 	url = ../../SWI-Prolog/packages-bdb.git
 [submodule "packages/cpp"]
 	path = packages/cpp
-	url = ../packages-cpp.git
+	url = ../../SWI-Prolog/packages-cpp.git
 [submodule "packages/ltx2htm"]
 	path = packages/ltx2htm
 	url = ../../SWI-Prolog/packages-ltx2htm.git
@@ -117,7 +117,10 @@
 	url = ../../SWI-Prolog/packages-mqi.git
 [submodule "packages/sweep"]
 	path = packages/sweep
-	url = ../packages-sweep.git
+	url = ../../SWI-Prolog/packages-sweep.git
 [submodule "packages/swipy"]
 	path = packages/swipy
-	url = ../packages-swipy
+	url = ../../SWI-Prolog/packages-swipy
+[submodule "packages/json"]
+	path = packages/json
+	url = ../../SWI-Prolog/packages-json.git

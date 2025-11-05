@@ -52,6 +52,7 @@
 #include "os/pl-utf8.h"
 #include "os/pl-prologflag.h"
 #include "os/pl-fmt.h"
+#include "pl-termset.h"
 #include <stdio.h>			/* sprintf() */
 #include <errno.h>
 #ifdef HAVE_LOCALE_H
@@ -148,12 +149,12 @@ varName(term_t t, char *name)
 }
 
 
-static int
+static bool
 atomIsVarName(atom_t a)
 { Atom atom = atomValue(a);
 
   if ( isoff(atom->type, PL_BLOB_TEXT) || atom->length == 0 )
-    fail;
+    return false;
   if ( isUCSAtom(atom) )
   { pl_wchar_t *w = (pl_wchar_t*)atom->name;
     size_t len = atom->length / sizeof(pl_wchar_t);
@@ -657,6 +658,31 @@ writeQuoted(IOSTREAM *stream, const char *text, size_t len, int quote,
 
 #if O_ATTVAR
 static bool
+writeAttributes(term_t t, int prec, write_options *options, int flags)
+{ term_t name  = PL_new_term_ref();
+  term_t value = PL_new_term_ref();
+  term_t att   = PL_new_term_ref();
+
+  for(bool first=true; PL_is_functor(t, FUNCTOR_att3); first = false)
+  { _PL_get_arg(1, t, name);
+    _PL_get_arg(2, t, value);
+    _PL_get_arg(3, t, t);
+
+    if ( !first && !PutComma(options) )
+      return false;
+    if ( !PL_cons_functor(att, FUNCTOR_colon2, name, value) ||
+	 !writeTerm(att, 999, options, W_COMPOUND_ARG) )
+      return false;
+  }
+  if ( !PL_get_nil(t) &&
+       !writeTerm(t, 999, options, W_COMPOUND_ARG) )
+    return false;
+
+  PL_reset_term_refs(name);
+  return true;
+}
+
+static bool
 writeAttVar(term_t av, write_options *options)
 { GET_LD
   char buf[32];
@@ -675,14 +701,14 @@ writeAttVar(term_t av, write_options *options)
     Sputcode('{', options->out);
     a = PL_new_term_ref();
     PL_get_attr(av, a);
-    if ( !writeTerm(a, 1200, options, W_TOP) )
+    if ( !writeAttributes(a, 1200, options, W_TOP) )
       return false;
     Sputcode('}', options->out);
     PL_close_foreign_frame(fid);
 
     return true;
   } else if ( (options->flags & PL_WRT_ATTVAR_PORTRAY) &&
-	      GD->cleaning <= CLN_PROLOG )
+	      GD->halt.cleaning <= CLN_PROLOG )
   { predicate_t pred;
     IOSTREAM *old;
     wakeup_state wstate;
@@ -736,7 +762,7 @@ writeAtom(atom_t a, write_options *options)
 
   if ( (options->flags & PL_WRT_BLOB_PORTRAY) &&
        isoff(atom->type, PL_BLOB_TEXT) &&
-       GD->cleaning <= CLN_PROLOG &&
+       GD->halt.cleaning <= CLN_PROLOG &&
        a != ATOM_nil )
   { GET_LD
     int rc;
@@ -1478,7 +1504,7 @@ static int
 callPortray(term_t arg, int prec, write_options *options)
 { predicate_t pred;
 
-  if ( GD->cleaning > CLN_PROLOG )
+  if ( GD->halt.cleaning > CLN_PROLOG )
     fail;				/* avoid dangerous callbacks */
 
   if ( options->portray_goal )
@@ -1924,10 +1950,10 @@ reunify_acyclic_substitutions(term_t substitutions, term_t cycles,
 }
 
 
-static int
+static bool
 writeTopTerm(term_t term, int prec, write_options *options)
 { GET_LD
-  int rc;
+  bool rc;
   int wflags;
 
   if ( ison(options, PL_WRT_PARTIAL) && prec != 999 && prec != 1200 )
@@ -1974,7 +2000,7 @@ writeTopTerm(term_t term, int prec, write_options *options)
 
 
 #define bind_varnames(names) LDFUNC(bind_varnames, names)
-static int
+static bool
 bind_varnames(DECL_LD term_t names)
 { term_t tail, head, var, namet;
   int check_cycle_after = 1000;

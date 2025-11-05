@@ -81,10 +81,10 @@ prolog:message(test(no_pkg(Pkg))) -->
 
 % The  test-suite  library/test_date.pl  depends  on  the  timezone.  As
 % correct results are only  provided  for   the  CET  (Central European)
-% timezone we use this. Timezone cannot be  changed at runtime, so we do
-% this early.
+% timezone we use Amsterdam.  Timezone cannot be changed at runtime,  so
+% we do this early.
 
-:- setenv('TZ', 'CET').
+:- setenv('TZ', 'Europe/Amsterdam').
 
 
                  /*******************************
@@ -1382,53 +1382,6 @@ copy_term(nat-2) :-                     % cyclic term
 
 
                  /*******************************
-                 *           TERM-HASH          *
-                 *******************************/
-
-term_hash(simple-1) :-
-    term_hash(aap, X),
-    memberchk(X, [ 9270206,         % little endian
-                   16674642         % big endian
-                 ]).
-
-term_hash(simple-2) :-                  % small int
-    term_hash(42, X),
-    memberchk(X, [ 12280004,        % little endian
-                   9594725          % big endian
-                 ]).
-term_hash(simple-3) :-                  % not tagged int
-    term_hash(2000000000, X),
-    memberchk(X, [ 13691282,        % little endian
-                   10072710         % big endian
-                 ]).
-term_hash(simple-4) :-
-    A is pi,
-    term_hash(A, X),
-    memberchk(X, [ 15717536,        % little endian
-                   14888348         % big endian
-                 ]).
-term_hash(simple-5) :-
-    string_codes(S, "hello world"),
-    term_hash(S, 13985775).
-term_hash(compound-1) :-
-    term_hash(hello(world), X),
-    memberchk(X, [ 2512014,         % little endian
-                   4285241          % big endian
-                 ]).
-term_hash(compound-2) :-
-    A = x(a),
-    term_hash(hello(A, A), X),
-    memberchk(X, [ 6171734,         % little endian
-                   13034251         % big endian
-                 ]).
-term_hash(compound-3) :-
-    term_hash(hello(x(a), x(a)), X),
-    memberchk(X, [ 6171734,         % little endian
-                   13034251         % big endian
-                 ]).
-
-
-                 /*******************************
                  *    BIG TERMS, ATOM-TO-TERM   *
                  *******************************/
 
@@ -1979,7 +1932,8 @@ wide_character_types :-
 %
 %   Enumerate directories holding tests.
 
-testdir('unprotected').
+testdir('unprotected') :-
+    current_prolog_flag(protect_static_code, false).
 testdir('core').
 testdir('attvar').
 testdir('debug').

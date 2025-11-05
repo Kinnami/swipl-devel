@@ -618,7 +618,10 @@ dispatch_signal(int sig, int sync)
 					/* longjmp.  If that fails, crash */
   if ( is_fatal_signal(sig) )
   { if ( exception_term )
-    { PL_rethrow();
+    {
+#if O_THROW
+      PL_rethrow();
+#endif
       sigCrashHandler(sig);
     }
     exit(4);
@@ -873,8 +876,9 @@ halt_handler(int sig)
 { GET_LD
   (void)sig;
 
-  if ( !raise_halt_exception(GD->halt_status, true) )
-  { Sdprintf("Failed to raise unwind(halt(%d))\n", GD->halt_status);
+  if ( !raise_halt_exception(GD->halt.status, true) )
+  { Sdprintf("Failed to raise unwind(halt(%d))\n",
+	     GD->halt.status&PL_CLEANUP_STATUS_MASK);
     abortProlog();
   }
 }

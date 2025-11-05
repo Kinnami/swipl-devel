@@ -20,12 +20,37 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # While GCC is good at optimization large   functions, MSVC is bad at it
 # and using VMI functions more then   doubles the performance. For Clang
 # the picture is less clear. The difference  is small, with a slight win
-# on either depending on CPU and workload.
+# on either depending on  CPU  and   workload.  Using  Emscripten (WASM)
+# however, using a switch produces the fastest and smallest binary.
 
-if(MSVC OR CMAKE_C_COMPILER_ID STREQUAL Clang)
+if(EMSCRIPTEN)
+  set(DEFAULT_VMI_FUNCTIONS OFF)
+  set(O_LABEL_ADDRESSES OFF)
+elseif(MSVC OR CMAKE_C_COMPILER_ID STREQUAL Clang)
   set(DEFAULT_VMI_FUNCTIONS ON)
 else()
   set(DEFAULT_VMI_FUNCTIONS OFF)
+endif()
+
+if(APPLE)
+# tcmalloc breaks setlocale() on MacOS 12 (Monterey)
+  set(DEFAULT_USE_TCMALLOC OFF)
+else()
+  set(DEFAULT_USE_TCMALLOC ON)
+endif()
+
+if(EMSCRIPTEN)
+  set(DEFAULT_EPILOG OFF)
+  set(DEFAULT_CCACHE OFF)
+else()
+  set(DEFAULT_EPILOG ON)
+  set(DEFAULT_CCACHE ON)
+endif()
+
+if(WIN32)
+  set(DEFAULT_SWIPL_INSTALL_AS_LINK OFF)
+else()
+  set(DEFAULT_SWIPL_INSTALL_AS_LINK ON)
 endif()
 
 option(MULTI_THREADED
@@ -43,16 +68,9 @@ option(USE_SIGNALS
 option(USE_GMP
        "Use GNU MP Bignum library (LGPL)"
        ON)
-if(APPLE)
-# tcmalloc breaks setlocale() on MacOS 12 (Monterey)
 option(USE_TCMALLOC
        "Use Google tcmalloc instead of default malloc"
-       OFF)
-else()
-option(USE_TCMALLOC
-       "Use Google tcmalloc instead of default malloc"
-       ON)
-endif()
+       ${DEFAULT_USE_TCMALLOC})
 option(SWIPL_SHARED_LIB
        "Put kernel in a shared library"
        ON)
@@ -68,15 +86,9 @@ option(SWIPL_INSTALL_IN_LIB
 option(SWIPL_INSTALL_IN_SHARE
        "Install docs in ${CMAKE_INSTALL_PREFIX}/share/swipl"
        OFF)
-if(WIN32)
 option(SWIPL_INSTALL_AS_LINK
        "Install public binaries using a symlink"
-       OFF)
-else()
-option(SWIPL_INSTALL_AS_LINK
-       "Install public binaries using a symlink"
-       ON)
-endif()
+       ${DEFAULT_SWIPL_INSTALL_AS_LINK})
 option(SWIPL_M32
        "Build 32-bit version on 64-bit Linux using multilib and gcc -m32"
        OFF)
@@ -119,20 +131,22 @@ option(GCOV
 option(STATIC_EXTENSIONS
        "Add foreign extensions statically"
        OFF)
-if(EMSCRIPTEN)
-  set(DEFAULT_CCACHE OFF)
-else()
-  set(DEFAULT_CCACHE ON)
-endif()
 option(CCACHE
        "Use ccache when available"
        ${DEFAULT_CCACHE})
 option(VALIDATE_API
        "Add runtime argument checks for PL_*() functions"
        ON)
+if(MULTI_THREADED)
 option(EPILOG
        "Configure Prolog for using the XPCE Epilog interface"
-       ON)
+       ${DEFAULT_EPILOG})
+else()
+set(EPILOG OFF)
+endif()
+option(WASM_EXCEPTIONS
+       "Use -fwasm-exceptions -sSUPPORT_LONGJMP=wasm"
+       OFF)
 
 set(JNIDIR ""
     CACHE STRING "Directory for linking Java JNI components")

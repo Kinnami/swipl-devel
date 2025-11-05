@@ -210,6 +210,9 @@ handy for it someone wants to add a data type to the system.
       Include validity checks for the API functions
   O_TRIE_ATTVAR
       Support attributed variables in tries and tabling.
+  O_THROW
+      Use setjmp() in PL_next_solution(), allowing for PL_throw().  This
+      has a 12% performance impact (gcc 15, Fedora 42 on ADM3950X).
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 #define O_COMPILE_OR		1
@@ -246,6 +249,7 @@ handy for it someone wants to add a data type to the system.
 #ifndef O_RATIONAL_SYNTAX
 #define O_RATIONAL_SYNTAX	RAT_COMPAT
 #endif
+#define O_THROW			1
 
 /* Define either or none of O_DYNAMIC_EXTENSIONS and O_STATIC_EXTENSIONS */
 #if (defined(HAVE_DLOPEN) || defined(HAVE_SHL_LOAD) || defined(EMULATE_DLOPEN)) \
@@ -254,7 +258,6 @@ handy for it someone wants to add a data type to the system.
 #endif
 
 #ifdef __WINDOWS__
-#define NOTTYCONTROL           true
 #define O_DDE 1
 #define O_DLL 1
 #define O_HASDRIVES 1
@@ -496,6 +499,15 @@ A common basis for C keywords.
 #define MAYBE_UNUSED
 #endif
 
+#if (defined(__GNUC__) && __GNUC__ >= 13) || \
+    (defined(__clang__) && __clang_major__ >= 17)
+#define ASSUME(expr) __attribute__((assume(expr)))
+#elif defined(_MSC_VER)
+#define ASSUME(expr) __assume(expr)
+#else
+#define ASSUME(expr) assert(expr)
+#endif
+
 #ifdef HAVE___BUILTIN_EXPECT
 #define likely(x)       __builtin_expect((x), 1)
 #define unlikely(x)     __builtin_expect((x), 0)
@@ -598,12 +610,6 @@ them.  Descriptions:
 #define inTaggedNumRange(n)	(valInt(consInt(n)) == (n))
 #define PLMININT		(-PLMAXINT - 1)
 #define PLMAXINT		((int64_t)(((uint64_t)1<<(INT64BITSIZE-1)) - 1))
-
-#if vax
-#define MAXREAL			(1.701411834604692293e+38)
-#else					/* IEEE double */
-#define MAXREAL			(1.79769313486231470e+308)
-#endif
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Macros to handle hash tables.  See pl-table.c for  details.   First  the
@@ -804,8 +810,8 @@ typedef uintptr_t		code;		/* VM instructions */
 typedef intptr_t		scode;		/* signed VM instruction argument */
 typedef code *			Code;		/* pointer to byte codes */
 typedef int			Char;		/* char that can pass EOF */
-typedef foreign_t		(*Func)();	/* foreign functions */
-typedef int			(*ArithF)();	/* arithmetic function */
+typedef void *			Func;		/* foreign functions */
+typedef bool			(*ArithF)();	/* arithmetic function */
 
 typedef struct atom *		Atom;		/* atom */
 typedef struct functor *	Functor;	/* complex term */
@@ -1084,6 +1090,12 @@ with one operation, it turns out to be faster as well.
 #define RAT_COMPAT		(0)
 #define RAT_NATURAL		(0x00000100) /* 1/3 */
 #define RAT_MASK		(RAT_NATURAL)
+#define VARTAG_DICT		(0x00000000) /* _{...} --> old dict */
+#define VARTAG_DYNDICT		(0x00000200) /* _{...} --> #{...} */
+#define VARTAG_ATTVAR		(0x00000400) /* _{...} --> attvar */
+#define VARTAG_ERROR		(0x00000600) /* _{...} --> error */
+#define VARTAG_WARNING		(0x00000800) /* _{...} --> warning + dict */
+#define VARTAG_MASK		(0x00000e00)
 #define UNKNOWN_FAIL		(0x00001000) /* module */
 #define UNKNOWN_WARNING		(0x00002000) /* module */
 #define UNKNOWN_ERROR		(0x00004000) /* module */
@@ -2499,7 +2511,7 @@ the arithmetic after dividing by the unit size.
 
 #define hasSpace(base, top, size) f_hasSpace(base, top, size, sizeof(*(base)))
 
-static inline int
+static inline bool
 f_hasSpace(void *here, void *top, size_t nelem, size_t esize)
 {
 #if O_DEBUG
@@ -2783,7 +2795,8 @@ typedef enum plflag
   PLFLAG_DEBUG_ON_INTERRUPT,		/* Debug on Control-C */
   PLFLAG_OPTIMISE_UNIFY,		/* Move unifications in clauses */
   PLFLAG_SHIFT_CHECK,			/* Check suspicious shifts */
-  PLFLAG_AGC_CLOSE_STREAMS		/* AGC may close open streams */
+  PLFLAG_AGC_CLOSE_STREAMS,		/* AGC may close open streams */
+  PLFLAG_EPILOG				/* swipl-win */
 } plflag;
 
 typedef struct

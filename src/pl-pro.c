@@ -110,7 +110,7 @@ restore_after_exception(term_t except)
   return rc;
 }
 
-static int
+static bool
 halt_from_exception(term_t ex)
 { GET_LD
   Word p = valTermRef(ex);
@@ -181,8 +181,13 @@ query_loop(atom_t goal, bool loop)
 
       if ( exclass == EXCEPT_ABORT )
 	Sclearerr(Suser_input);
-      if ( exclass == EXCEPT_HALT && PL_thread_self() <= 1 )
-	halt_from_exception(except);
+      if ( exclass == EXCEPT_HALT )
+      { rc = true;
+	loop = false;
+	int me = PL_thread_self();
+	if ( me < 0 || me == 1 )	/* no threads or main thread */
+	  halt_from_exception(except);
+      }
 
       if ( !validUserStreams() )
       { rc = true;
@@ -602,9 +607,10 @@ exception if we cannot allocate the exception.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 bool
-raise_halt_exception(DECL_LD int code, bool force)
-{ pl_notrace();
+raise_halt_exception(DECL_LD int status, bool force)
+{ int code = (status&PL_CLEANUP_STATUS_MASK);
 
+  pl_notrace();
   LD->exception.processing = true;	/* allow using spare stack */
 
   if ( force || handles_unwind(NULL, PL_Q_EXCEPT_HALT) )

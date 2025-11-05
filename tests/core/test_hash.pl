@@ -3,7 +3,8 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2010-2015, University of Amsterdam
+    Copyright (c)  2010-2025, University of Amsterdam
+			    SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -40,7 +41,8 @@
 
 test_hash :-
 	run_tests([ variant_sha1,
-		    variant_hash
+		    variant_hash,
+		    term_hash2
 		  ]).
 
 :- begin_tests(variant_sha1).
@@ -103,3 +105,65 @@ test(variant, Hash1 == Hash2) :-
 v(_).
 
 :- end_tests(variant_hash).
+
+:- begin_tests(term_hash2).
+
+                 /*******************************
+                 *           TERM-HASH          *
+                 *******************************/
+
+% TBD: Big Endian must be updated after change to the
+% range in 9.3.2
+
+test(simple_1) :-
+    term_hash(aap, X),
+    assertion(memberchk(X, [ 3_331_158_974,   % little endian
+			     1509846866,      % big endian
+			     -963808322	      % WASM
+			   ])).
+
+test(simple_2) :-                  % small int
+    term_hash(42, X),
+    assertion(memberchk(X, [ 1_220_239_556,   % little endian
+			     3381815141       % big endian
+			   ])).
+test(simple_3) :-                  % Big int
+    Num is 366454713<<64,
+    term_hash(Num, X),
+    assertion(memberchk(X, [ 347_171_279,     % little endian
+			     1214499792,      % big endian
+			     3_784_382_378,   % LibBF, little endian
+			     3289800483,      % LibBF, big endian
+			     -510584918	      % WASM
+			   ])).
+test(simple_4) :-
+    A is pi,
+    term_hash(A, X),
+    assertion(memberchk(X, [ 4_260_353_184,   % little endian
+			     1776496028,      % big endian
+			     -34614112	      % WASM
+			   ])).
+test(simple_5, X == 1_540_712_431) :-
+    string_codes(S, "hello world"),
+    term_hash(S, X).
+test(compound_1) :-
+    term_hash(hello(world), X),
+    assertion(memberchk(X, [ 3_978_712_206,   % little endian
+			     3577832249,      % big endian
+			     -316255090	      % WASM
+			   ])).
+test(compound_2) :-
+    A = x(a),
+    term_hash(hello(A, A), X),
+    assertion(memberchk(X, [ 3_797_822_550,   % little endian
+			     1371988747,      % big endian
+			     -497144746	      % WASM
+			   ])).
+test(compound_3) :-
+    term_hash(hello(x(a), x(a)), X),
+    assertion(memberchk(X, [ 3_797_822_550,   % little endian
+			     1371988747,      % big endian
+			     -497144746	      % WASM
+			   ])).
+
+:- end_tests(term_hash2).

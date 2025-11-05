@@ -3,7 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2002-2011, University of Amsterdam
+    Copyright (c)  2025, University of Amsterdam
+                         VU University Amsterdam
+			 CWI, Amsterdam
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -32,21 +34,17 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-/* see also console.c */
-#define WM_RLC_MENU	 WM_USER+15	/* Insert a menu */
+#ifndef PL_TERMSET_H_INCLUDED
+#define PL_TERMSET_H_INCLUDED
 
-#define IDM_USER 100			/* reserve below 100 */
-#define MAXLABELLEN 256			/* max length of menu-item label */
+typedef struct
+{ struct TermNode *root;
+  struct TermNodeChunk *chunks;
+} term_set;
 
-#define IDM_EXIT	10
-#define IDM_CUT		11
-#define IDM_COPY	12
-#define IDM_PASTE	13
-#define IDM_BREAK	14
-#define IDM_FONT	15
+void	new_term_set(term_set *s);
+void	term_set_destroy(term_set *s);
+bool	term_set_insert(term_set *s, term_t t);
+bool	term_set_contains(term_set *s, term_t t);
 
-struct menu_data;
-
-const TCHAR *lookupMenuId(UINT id);
-void 	    rlc_add_menu_bar(HWND win);
-void	    rlc_menu_action(rlc_console c, struct menu_data *data);
+#endif/*PL_TERMSET_H_INCLUDED*/

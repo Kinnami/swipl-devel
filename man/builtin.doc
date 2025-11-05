@@ -1528,10 +1528,10 @@ example, halt the process on a non-zero error count right after
 loading the file with errors using the code below.
 
 \begin{code}
-:- multifile user:message_hook/3.
+:- multifile prolog:message_action/2.
 
-user:message_hook(load_file_errors(_File, Errors, _Warnings),
-		  _Level, _Lines) :-
+prolog:message_action(load_file_errors(_File, Errors, _Warnings),
+		      _Level) :-
     Errors > 0,
     halt(1).
 \end{code}
@@ -3359,6 +3359,16 @@ the same as passed to print_message/2. \arg{Lines} is a list of format
 statements as described with print_message_lines/3.  See also
 message_to_string/2.
 
+If calling this hook succeeds, the message is considered printed and no
+further action is taken. Version 9.3.34 introduced
+prolog:message_action/2 to allow modules to act on certain actions.
+Before prolog:message_action/2 was introduced a program could associate
+an action with a message by adding a clause for message_hook/3 that
+realises the desired action and then fails. The problem with this
+approach for actions is that the order of clauses for a multi-file
+predicate is poorly defined.  If the application defines a hook that
+succeeds, this hook may cause intended actions not to take place.
+
 This predicate must be defined dynamic and multifile to allow other
 modules defining clauses for it too.
 
@@ -3367,6 +3377,17 @@ As message_hook/3, but this predicate is local to the calling thread
 (see thread_local/1).  This hook is called \emph{before} message_hook/3.
 The `pre-hook' is indented to catch messages they may be produced by
 calling some goal without affecting other threads.
+
+    \predicate[nondet]{prolog:message_action}{2}{+Term, +Kind}
+This hook is called before message_hook/3 as below.  This hook
+appeared in 9.3.34.  It allows to associate side-effects with
+messages in a reliable way by decoupling printing (or reporting
+some other way) from associated side effects.  See also broadcast/1
+from library \pllib{broadcast}.
+
+\begin{code}
+    forall(prolog:message_action(Term, Kind), true).
+\end{code}
 
     \predicate{message_property}{2}{+Kind, ?Property}
 This hook can be used to define additional message kinds and the way
@@ -4043,22 +4064,24 @@ x(Term) :-
 
 \begin{description}
     \predicate[det]{term_hash}{2}{+Term, -HashKey}
-If \arg{Term} is a ground term (see ground/1), \arg{HashKey} is unified
-with a positive integer value that may be used as a hash key to the
-value. If \arg{Term} is not ground, the predicate leaves \arg{HashKey}
-an unbound variable.  Hash keys are in the range $0 \ldots 16,777,215$,
-the maximal integer that can be stored efficiently on both 32 and 64
-bit platforms.
+If \arg{Term} is a ground term (see ground/1), \arg{HashKey} is
+unified with a positive integer value that may be used as a hash key
+to the value. If \arg{Term} is not ground, the predicate leaves
+\arg{HashKey} an unbound variable.  Hash keys are in the range $0
+\ldots 72,057,594,037,927,935$ ($2^56$), the maximal integer that can be
+stored efficiently (see \prologflag{max_tagged_integer}.
 
 This predicate may be used to build hash tables as well as to exploit
 argument indexing to find complex terms more quickly.
 
 The hash key does not rely on temporary information like addresses of
 atoms and may be assumed constant over different invocations and
-versions of SWI-Prolog.\footnote{Last change: version 5.10.4} Hashes
-differ between big and little endian machines. The term_hash/2 predicate
-is cycle-safe.\bug{All arguments that (indirectly) lead to a cycle
-have the same hash key.}
+versions of SWI-Prolog.\footnote{Last change: version 9.3.28} The
+term_hash/2 predicate is cycle-safe.\bug{All arguments that (indirectly)
+lead to a cycle have the same hash key.}
+\bug{Hashes differ between big and little endian machines and hashes for
+big integers (currently $> 2^56$) differ depending on the big integer
+\jargon{backend} (GMP or LibBF).  See \prologflag{gmp_version}.}
 
     \predicate[det]{term_hash}{4}{+Term, +Depth, +Range, -HashKey}
 As term_hash/2, but only considers \arg{Term} to the specified
@@ -5911,14 +5934,8 @@ specifications.
 \end{tabular}\end{center}
 
 Another example of using the \functor{pipe}{1} construct is shown
-below.%
-	\footnote{As of version 5.3.15, the pipe construct is supported
-		  in the MS-Windows version, both for
-		  \program{swipl.exe} and \program{swipl-win.exe}. The
-		  implementation uses code from the LUA programming
-		  language (\url{http://www.lua.org}).}
-Note that the \functor{pipe}{1} construct is not part of
-Prolog's standard I/O repertoire.
+below.  Note that the \functor{pipe}{1} construct is not part of
+Prolog's standard I/O repertoire.  See also process_create/3.
 
 \begin{code}
 getwd(Wd) :-
@@ -10196,25 +10213,10 @@ and should be used to output these strings. \arg{Lines} is the
 number of lines affected by the operation, or 1 if not applicable (as
 in almost all cases).
     \predicate{tty_size}{2}{-Rows, -Columns}
-Determine the size of the terminal.  Platforms:
-
-\begin{description}
-    \item[Unix]
-If the system provides \jargon{ioctl} calls for this, these are
-used and tty_size/2 properly reflects the actual size after a user
-resize of the window.   The \jargon{ioctl} is issued on the file
-descriptor associated with the \const{user_input} stream. As a fallback,
-the system uses tty_get_capability/3 using \const{li} and \const{co}
-capabilities. In this case the reported size reflects the size at the
-first call and is not updated after a user-initiated resize of the
-terminal.
-
-    \item[Windows]
-Getting the size of the terminal is provided for \program{swipl-win.exe}.
-The requested value reflects the current size. For the
-multithreaded version the console that is associated with the
-\const{user_input} stream is used.
-\end{description}
+Determine the size of the terminal. This predicate is provided for POSIX
+terminals, Windows console and the \program{swipl-win} Prolog consoles.
+Portable code should wrap this into catch/3 and use some default in case
+the console window size cannot be determined.
 \end{description}
 
 \section{Operating System Interaction}	\label{sec:system}
@@ -10845,73 +10847,75 @@ Days of the week are numbered from one to seven: Monday = 1, Tuesday =
 2, \ldots, Sunday = 7.
 \end{description}
 
-\subsection{Controlling the \program{swipl-win.exe} console window}
-\label{sec:plwin}
+\subsection{Controlling the \program{swipl-win} (Epilog) console window}
+\label{sec:epilog-api}
 
-The Windows executable \program{swipl-win.exe} console has a number of
-predicates to control the appearance of the console. Being totally
-non-portable, we do not advise using it for your own application, but
-use XPCE or another portable GUI platform instead. We give the
-predicates for reference here.
-
-\begin{description}
-    \predicate{window_title}{2}{-Old, +New}
-Unify \arg{Old} with the title displayed in the console and change the
-title to \arg{New}.%
-	\bug{This predicate should have been called
-	\const{win_window_title} for consistent naming.}
-
-    \predicate{win_window_pos}{1}{+ListOfOptions}
-Interface to the MS-Windows SetWindowPos() function, controlling
-size, position and stacking order of the window.  \arg{ListOfOptions}
-is a list that may hold any number of the terms below:
+\index{Epilog}%
+The SWI-Prolog package \const{xpce} provides the SWI-Prolog GUI
+capabilities. Part of it is a console window that provides a menu,
+called \jargon{Epilog}. If Prolog is started using \program{swipl-win},
+it starts as a GUI application running the Prolog REPL loop in an
+Epilog window.   SWI-Prolog allows opening multiple such console
+windows, each running the REPL loop in a new thread.  New Epilog
+windows can be started from several menus in the GUI as well as
+using the predicate epilog/0.
 
 \begin{description}
-    \termitem{size}{W, H}
-Change the size of the window.  \arg{W} and \arg{H} are expressed
-in character units.
-    \termitem{position}{X, Y}
-Change the top-left corner of the window.  The values are expressed
-in pixel units.
-    \termitem{zorder}{ZOrder}
-Change the location in the window stacking order.  Values are
-\const{bottom}, \const{top}, \const{topmost} and \const{notopmost}.
-\emph{Topmost} windows are displayed above all other windows.
-    \termitem{show}{Bool}
-If \const{true}, show the window, if \const{false} hide the window.
-    \termitem{activate}{}
-If present, activate the window.
+    \predicate{epilog}{0}
+Open a new Epilog console.  SWI-Prolog creates a new thread that runs
+the REPL loop and has its input and output connected to the new console.
+
+    \predicate{epilog}{1}{+Options}
+Open an Epilog console with additional \arg{Options}.
+
+\begin{description}
+    \termitem{title}{+String}
+Set the window title.
+    \termitem{rows}{+Integer}
+Height of the initial terminal in lines (default 25).
+    \termitem{cols}{+Integer}
+Width of the initial terminal in characters (default 80).
+    \termitem{init}{:Goal}
+Run Goal as initialization goal. Default calls version/0 for the
+first and true/0 for subsequent terminals.
+    \termitem{goal}{:Goal}
+Run Goal as REPL loop.  Default runs prolog/0.
+    \termitem{main}{+Bool}
+If \const{true}, act as application main window.   In this case epilog/1
+runs the main thread and returns after all windows have been closed.
 \end{description}
 
-    \predicate{win_window_color}{2}{+Which, +RGB}
-Change the color of the console window.  \arg{Which} is one of
-\const{foreground}, \const{background}, \const{selection_foreground} or
-\const{selection_background}. \arg{RGB} is a term
-\term{rgb}{Red,Green,Blue} where the components are values between 0
-and 255. The defaults are established using the Windows API
-GetSysColor().
+    \predicate{set_epilog}{1}{+Option}
+Modify the Epilog console attached to the calling thread. Option is one
+of:
 
-    \predicate{win_has_menu}{0}{}
-True if win_insert_menu/2 and win_insert_menu_item/4 are present.
+\begin{description}
+\termitem{title}{+Title}
+\termitem{foreground}{+Color}
+\termitem{background}{+Color}
+\termitem{selection_foreground}{+Color}
+\termitem{selection_background}{+Color}
+\termitem{menu}{+Label, +Before}
+Add a new popup to the Epilog menu. The popus is added before Before. If
+Before is `-`, the new popup is added to the right.
+\termitem{menu_item}{+PopupName, +Item, +Before, :Goal}
 
-    \predicate{win_insert_menu}{2}{+Label, +Before}
-Insert a new entry (pulldown) in the menu.  If the menu already contains
-this entry, nothing is done.  The \arg{Label} is the label and, using the
-Windows convention, a letter prefixed with \const{\&} is underlined and
-defines the associated accelerator key. \arg{Before} is the label before
-which this one must be inserted. Using \chr{-} adds the new entry at the
-end (right).  For example, the call below adds an {\sf Application}
-entry just before the {\sf Help} menu.
+Insert an item in the Epilog console menu. PopupName is the popup in
+which to insert the item. Item is the name for the new item. If Item is
+\const{--}, a \jargon{separator} is inserted. Before is the name of the
+item before which to insert the new item. If this is \const{-}, the item
+is appended.
 
-\begin{code}
-win_insert_menu('&Application', '&Help')
-\end{code}
+Goal is \jargon{injected} into  the  current   terminal  of  the Epilog
+window. This implies that we assume  that the console is waiting
+for the user. Eventually,  we  probably   want  a  more flexible
+solution.
 
-    \predicate{win_insert_menu_item}{4}{+Pulldown, +Label, +Before, :Goal}
-Add an item to the named \arg{Pulldown} menu. \arg{Label} and
-\arg{Before} are handled as in win_insert_menu/2, but the label \chr{-}
-inserts a \jargon{separator}.  \arg{Goal} is called if the user selects
-the item.
+This predicate raises \term{existence_error}{epilog, Thread} if the
+(calling) thread has no attached Epilog window.  Threads are started
+in an Epilog window have the Prolog flag \prologflag{console_menu}
+set to \const{true}.
+\end{description}
 \end{description}
 
 

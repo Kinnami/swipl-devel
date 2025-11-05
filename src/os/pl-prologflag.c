@@ -111,30 +111,13 @@ static void setTZPrologFlag(void);
 static void setVersionPrologFlag(void);
 static void initPrologFlagTable(void);
 
-typedef struct oneof
-{ size_t	count;
-  int		references;
-  atom_t       *values;
-} oneof;
-
-typedef struct _prolog_flag
-{ unsigned short flags;			/* Type | Flags */
-  short		index;			/* index in LD->prolog_flag.mask */
-  union
-  { atom_t	a;			/* value as atom */
-    int64_t	i;			/* value as integer */
-    double	f;			/* value as float */
-    record_t	t;			/* value as term */
-  } value;
-  oneof        *oneof;
-} prolog_flag;
-
 #define unify_prolog_flag_value(m, key, f, val) \
   LDFUNC(unify_prolog_flag_value, m, key, f, val)
 
-static int unify_prolog_flag_value(DECL_LD Module m, atom_t key, prolog_flag *f, term_t val);
-static int unify_prolog_flag_type(prolog_flag *f, term_t type);
-static int set_flag_type(prolog_flag *f, int flags);
+static bool unify_prolog_flag_value(DECL_LD Module m, atom_t key,
+				    prolog_flag *f, term_t val);
+static bool unify_prolog_flag_type(prolog_flag *f, term_t type);
+static bool set_flag_type(prolog_flag *f, int flags);
 
 #define FF_WARN_NOT_ACCESSED 0x0100
 #define FF_ACCESSED          0x0200
@@ -407,7 +390,7 @@ freeSymbolPrologFlagTable(table_key_t name, table_value_t value)
 #endif
 
 
-int
+bool
 setDoubleQuotes(atom_t a, unsigned int *flagp)
 { GET_LD
   unsigned int flags;
@@ -431,11 +414,11 @@ setDoubleQuotes(atom_t a, unsigned int *flagp)
   *flagp &= ~DBLQ_MASK;
   *flagp |= flags;
 
-  succeed;
+  return true;
 }
 
 
-int
+bool
 setBackQuotes(atom_t a, unsigned int *flagp)
 { GET_LD
   unsigned int flags;
@@ -459,11 +442,11 @@ setBackQuotes(atom_t a, unsigned int *flagp)
   *flagp &= ~BQ_MASK;
   *flagp |= flags;
 
-  succeed;
+  return true;
 }
 
 
-int
+bool
 setRationalSyntax(atom_t a, unsigned int *flagp)
 { GET_LD
   unsigned int flags;
@@ -483,10 +466,50 @@ setRationalSyntax(atom_t a, unsigned int *flagp)
   *flagp &= ~RAT_MASK;
   *flagp |= flags;
 
-  succeed;
+  return true;
+}
+
+bool
+setVarTagFlag(atom_t a, unsigned int *flagp)
+{ GET_LD
+  unsigned int flags;
+
+  if ( a == ATOM_attvar )
+    flags = VARTAG_ATTVAR;
+  else if ( a == ATOM_dyndict )	/* # */
+    flags = VARTAG_DYNDICT;
+  else if ( a == ATOM_dict_txt ) /* dict */
+    flags = VARTAG_DICT;
+  else if ( a == ATOM_error )
+    flags = VARTAG_ERROR;
+  else if ( a == ATOM_warning )
+    flags = VARTAG_WARNING;
+  else
+  { term_t value = PL_new_term_ref();
+
+    PL_put_atom(value, a);
+    return PL_error(NULL, 0, NULL, ERR_DOMAIN,
+		    ATOM_var_tag, value);
+  }
+
+  *flagp &= ~VARTAG_MASK;
+  *flagp |= flags;
+
+  return true;
 }
 
 
+static atom_t
+getVarTagFlag(unsigned int flags)
+{ switch(flags&VARTAG_MASK)
+  { case VARTAG_DICT:    return ATOM_dict_txt;
+    case VARTAG_DYNDICT: return ATOM_dyndict;
+    case VARTAG_ATTVAR:  return ATOM_attvar;
+    case VARTAG_ERROR:   return ATOM_error;
+    case VARTAG_WARNING: return ATOM_warning;
+    default: assert(0);  return (atom_t)0;
+  }
+}
 
 static bool
 setUnknown(term_t value, atom_t a, Module m)
@@ -795,7 +818,7 @@ get_win_file_access_check(void)
 #define FF_COPY_FLAGS (FF_READONLY|FF_WARN_NOT_ACCESSED)
 #define PSEUDO_FLAG ((prolog_flag*)true)
 
-static int
+static bool
 set_flag_type(prolog_flag *f, int flags)
 { f->flags = (f->flags&~FT_MASK) | (flags&FT_MASK);
   return true;
@@ -893,9 +916,10 @@ keep_flag(atom_t k, prolog_flag *f, unsigned short flags, oneof *of, term_t valu
 	LDFUNC(set_prolog_flag_unlocked, m, k, value, flags, of)
 
 static prolog_flag *
-set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, unsigned short flags, oneof *of)
+set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value,
+			 unsigned short flags, oneof *of)
 { prolog_flag *f;
-  int rval = true;
+  bool rval = true;
 
 					/* set existing Prolog flag */
 #ifdef O_PLMT
@@ -1140,6 +1164,8 @@ set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, unsigned shor
       { rval = setBackQuotes(a, &m->flags);
       } else if ( k == ATOM_rational_syntax )
       { rval = setRationalSyntax(a, &m->flags);
+      } else if ( k == ATOM_var_tag )
+      { rval = setVarTagFlag(a, &m->flags);
       } else if ( k == ATOM_unknown )
       { rval = setUnknown(value, a, m);
       } else if ( k == ATOM_unknown_option )
@@ -1422,10 +1448,11 @@ PL_current_prolog_flag(atom_t name, int type, void *value)
 }
 
 #define unify_prolog_flag_value(m, key, f, val) \
-  LDFUNC(unify_prolog_flag_value, m, key, f, val)
+	LDFUNC(unify_prolog_flag_value, m, key, f, val)
 
-static int
-unify_prolog_flag_value(DECL_LD Module m, atom_t key, prolog_flag *f, term_t val)
+static bool
+unify_prolog_flag_value(DECL_LD Module m, atom_t key,
+			prolog_flag *f, term_t val)
 { if ( key == ATOM_character_escapes )
   { return PL_unify_bool(val, ison(m, M_CHARESCAPE));
   } else if ( key == ATOM_var_prefix )
@@ -1466,6 +1493,8 @@ unify_prolog_flag_value(DECL_LD Module m, atom_t key, prolog_flag *f, term_t val
     }
 
     return PL_unify_atom(val, v);
+  } else if ( key == ATOM_var_tag )
+  { return PL_unify_atom(val, getVarTagFlag(m->flags));
   } else if ( key == ATOM_unknown )
   { atom_t v;
 
@@ -1532,7 +1561,7 @@ unify_prolog_flag_value(DECL_LD Module m, atom_t key, prolog_flag *f, term_t val
     }
     default:
       assert(0);
-      fail;
+      return false;
   }
 }
 
@@ -1548,7 +1577,7 @@ unify_prolog_flag_access(prolog_flag *f, term_t access)
 }
 
 
-static int
+static bool
 unify_prolog_flag_type(prolog_flag *f, term_t type)
 { GET_LD
   atom_t a;
@@ -1578,12 +1607,30 @@ unify_prolog_flag_type(prolog_flag *f, term_t type)
       break;
     default:
       assert(0);
-      fail;
+      return false;
   }
 
   return PL_unify_atom(type, a);
 }
 
+prolog_flag *
+current_prolog_flag(const char *name)
+{ if ( GD->atoms.initialised )
+  { atom_t k;
+
+    k = PL_new_atom(name);
+#ifdef O_PLMT
+    GET_LD
+
+    if ( LD && LD->prolog_flag.table )
+      return lookupHTableWP(LD->prolog_flag.table, k);
+#endif
+    if ( GD->prolog_flag.table )
+      return lookupHTableWP(GD->prolog_flag.table, k);
+  }
+
+  return NULL;
+}
 
 typedef struct
 { TableEnum table_enum;
@@ -2004,6 +2051,7 @@ initPrologFlags(void)
 		GD->options.traditional ? "codes" : "string");
   setPrologFlag("back_quotes", FT_ATOM,
 		GD->options.traditional ? "symbol_char" : "codes");
+  setPrologFlag("var_tag", FT_ATOM, "dict");
   setPrologFlag("portable_vmi", FT_BOOL, true, PLFLAG_PORTABLE_VMI);
   setPrologFlag("traditional", FT_BOOL|FF_READONLY, GD->options.traditional, 0);
   setPrologFlag("unknown", FT_ATOM, "error");
@@ -2074,6 +2122,7 @@ initPrologFlags(void)
   setPrologFlag("encoding", FT_ATOM,
 		stringAtom(PL_encoding_to_atom(LD->encoding)));
 
+  setPrologFlag("epilog", FT_BOOL, FALSE, PLFLAG_EPILOG);
   setPrologFlag("tty_control", FT_BOOL,
 		truePrologFlag(PLFLAG_TTY_CONTROL), PLFLAG_TTY_CONTROL);
   setPrologFlag("signals", FT_BOOL|FF_READONLY,
@@ -2251,9 +2300,9 @@ setABIVersionPrologFlag(void)
 }
 
 
-int
+bool
 checkPrologFlagsAccess(void)
-{ int rc = true;
+{ bool rc = true;
 
   if ( GD->prolog_flag.table )
   { if ( HAS_LD )
